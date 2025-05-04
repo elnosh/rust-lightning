@@ -12881,7 +12881,7 @@ pub(crate) fn provided_channel_features(config: &UserConfig) -> ChannelFeatures 
 
 /// Fetches the set of [`ChannelTypeFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
-pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelTypeFeatures {
+pub fn provided_channel_type_features(config: &UserConfig) -> ChannelTypeFeatures {
 	ChannelTypeFeatures::from_init(&provided_init_features(config))
 }
 

@@ -860,7 +860,7 @@ impl Bolt12InvoiceFeatures {
 }
 
 impl ChannelTypeFeatures {
-	#[doc(hidden)]
+	//#[doc(hidden)]
 	/// Maps the relevant `InitFeatures` to `ChannelTypeFeatures`. Any unknown features to
 	/// `ChannelTypeFeatures` are not included in the result.
 	///
