@@ -17,7 +17,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent};
 use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
-use crate::ln::channel;
+use crate::ln::channel::{self, FUNDING_CONF_DEADLINE_BLOCKS};
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
@@ -26,7 +26,7 @@ use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
 
-use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{transaction, Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::Builder;
 use bitcoin::opcodes;
@@ -166,6 +166,151 @@ fn revoked_output_htlc_resolution_timing() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[1], payment_hash_1, false);
 }
+
+#[test]
+fn archive_monitor_unconfirmed_incoming() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a = &nodes[0];
+	let node_b = &nodes[1];
+
+	let node_a_id = node_a.node.get_our_node_id();
+	let node_b_id = node_b.node.get_our_node_id();
+
+	let create_chan_id =
+		node_a.node.create_channel(node_b.node.get_our_node_id(), 1_000_000, 0, 42, None, None).unwrap();
+	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b_id);
+	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
+	assert_eq!(
+		node_a
+			.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == create_chan_id)
+			.unwrap()
+			.user_channel_id,
+		42
+	);
+	node_b.node.handle_open_channel(node_a_id, &open_channel_msg);
+	if node_b.node.get_current_default_configuration().manually_accept_inbound_channels {
+		let events = node_b.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => node_b
+				.node
+				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None)
+				.unwrap(),
+			_ => panic!("Unexpected event"),
+		};
+	}
+	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a_id);
+	assert_eq!(accept_channel_msg.common_fields.temporary_channel_id, create_chan_id);
+	node_a.node.handle_accept_channel(node_b_id, &accept_channel_msg);
+	assert_ne!(
+		node_b
+			.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == create_chan_id)
+			.unwrap()
+			.user_channel_id,
+		0
+	);
+
+	let events_a = node_a.node.get_and_clear_pending_events();
+	let chan_id = *node_a.network_chan_count.borrow();
+	let (temp_chan_id, tx, _outpoint) = match events_a[0] {
+		Event::FundingGenerationReady {
+			ref temporary_channel_id,
+			counterparty_node_id: _,
+			ref channel_value_satoshis,
+			ref output_script,
+			user_channel_id: _,
+		} => {
+			let input = Vec::new();
+
+			let tx = Transaction {
+				version: transaction::Version(chan_id as i32),
+				lock_time: LockTime::ZERO,
+				input,
+				output: vec![TxOut {
+					value: Amount::from_sat(*channel_value_satoshis),
+					script_pubkey: output_script.clone(),
+				}],
+			};
+			let funding_outpoint = OutPoint { txid: tx.compute_txid(), index: 0 };
+			(*temporary_channel_id, tx, funding_outpoint)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	assert!(node_a.node.funding_transaction_generated(temp_chan_id, node_b_id, tx).is_ok());
+
+	let funding_created_msg =
+		get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b_id);
+
+	node_b.node.handle_funding_created(node_a_id, &funding_created_msg);
+
+	check_added_monitors(node_b, 1);
+
+	expect_channel_pending_event(node_b, &node_a_id);
+		let bs_funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
+	node_a.node.handle_funding_signed(node_b_id, &bs_funding_signed);
+	check_added_monitors(node_a, 1);
+	expect_channel_pending_event(&node_a, &node_b_id);
+
+	connect_blocks(node_a, FUNDING_CONF_DEADLINE_BLOCKS * 2);
+	connect_blocks(node_b, FUNDING_CONF_DEADLINE_BLOCKS * 2);
+
+	node_b.chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+
+	connect_blocks(node_a, ARCHIVAL_DELAY_BLOCKS);
+	connect_blocks(node_b, ARCHIVAL_DELAY_BLOCKS);
+
+	node_b.chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+
+	assert_eq!(node_b.chain_monitor.chain_monitor.list_monitors().len(), 0);
+}
+
+#[test]
+fn archive_fully_resolved_monitors_incoming() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, _funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
+
+	let node_b = &nodes[1];
+
+	let message = "force-closing in test".to_owned();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
+
+	let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(commitment_tx.len(), 1);
+
+	mine_transaction(&nodes[0], &commitment_tx[0]);
+	mine_transaction(&nodes[1], &commitment_tx[0]);
+
+	connect_blocks(&nodes[0], ARCHIVAL_DELAY_BLOCKS * 2);
+	connect_blocks(&nodes[1], ARCHIVAL_DELAY_BLOCKS * 2);
+
+	node_b.chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+
+	connect_blocks(&nodes[0], ARCHIVAL_DELAY_BLOCKS);
+	connect_blocks(&nodes[1], ARCHIVAL_DELAY_BLOCKS);
+
+	node_b.chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+
+	assert_eq!(node_b.chain_monitor.chain_monitor.list_monitors().len(), 0);
+}
+
 
 #[test]
 fn archive_fully_resolved_monitors() {

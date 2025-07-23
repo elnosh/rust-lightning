@@ -304,7 +304,7 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 	node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool,
 ) {
 	let height = node.best_block_info().1 + 1;
-	eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
+	// eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
 	// Update the block internally before handing it over to LDK, to ensure our assertions regarding
 	// transaction broadcast are correct.
 	node.blocks.lock().unwrap().push((block.clone(), height));
@@ -1952,7 +1952,7 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 		total_value_out += output.value.to_sat();
 	}
 	let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-													// Input amount - output amount = fee, so check that out + min_fee is smaller than input
+													 // Input amount - output amount = fee, so check that out + min_fee is smaller than input
 	assert!(total_value_out + min_fee <= total_value_in);
 	tx.verify(get_output).unwrap();
 }
