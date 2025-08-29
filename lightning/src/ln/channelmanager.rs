@@ -5272,9 +5272,16 @@ where
 	}
 
 	/// Forwards a [`StaticInvoice`] in response to an [`Event::StaticInvoiceRequested`].
-	pub fn send_static_invoice(
-		&self, invoice: StaticInvoice, responder: Responder,
+	// TODO: fix comment. Not only fwd static invoice but also invreq to path provided
+	pub fn send_response_static_invoice_request(
+		&self, invoice: StaticInvoice, responder: Responder, invoice_request: InvoiceRequest,
+		invoice_request_path: BlindedMessagePath,
 	) -> Result<(), Bolt12SemanticError> {
+		self.flow.enqueue_invoice_request_to_forward(
+			invoice_request,
+			invoice_request_path,
+			responder.clone(),
+		);
 		self.flow.enqueue_static_invoice(invoice, responder)
 	}
 
@@ -8286,7 +8293,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -8324,7 +8332,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -14383,11 +14392,12 @@ where
 					None => return None,
 				};
 
+
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
-					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot }) => {
+					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
-							recipient_id, invoice_slot, reply_path: responder
+							recipient_id, invoice_slot, reply_path: responder, invoice_request
 						}, None));
 
 						return None
@@ -14570,6 +14580,7 @@ where
 				invoice_slot,
 				recipient_id,
 				invoice_persisted_path: responder,
+				invoice_request_path: message.forward_invoice_request_path,
 			},
 			None,
 		));

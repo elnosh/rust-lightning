@@ -406,6 +406,7 @@ pub enum InvreqResponseInstructions {
 		recipient_id: Vec<u8>,
 		/// The slot number for the specific invoice being requested by the payer.
 		invoice_slot: u16,
+		invoice_request: InvoiceRequest,
 	},
 }
 
@@ -445,6 +446,7 @@ where
 				return Ok(InvreqResponseInstructions::SendStaticInvoice {
 					recipient_id,
 					invoice_slot,
+					invoice_request,
 				});
 			},
 			_ => return Err(()),
@@ -1117,6 +1119,19 @@ where
 		Ok(())
 	}
 
+	pub fn enqueue_invoice_request_to_forward(
+		&self, invoice_request: InvoiceRequest, invoice_request_path: BlindedMessagePath,
+		reply_path: Responder,
+	) {
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		let message = OffersMessage::InvoiceRequest(invoice_request);
+		let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+			destination: Destination::BlindedPath(invoice_request_path),
+			reply_path: reply_path.into_blinded_path(),
+		};
+		pending_offers_messages.push((message, instructions));
+	}
+
 	/// Enqueues `held_htlc_available` onion messages to be sent to the payee via the reply paths
 	/// contained within the provided [`StaticInvoice`].
 	///
@@ -1557,8 +1572,9 @@ where
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;
 
-		let nonce = Nonce::from_entropy_source(&*entropy);
-		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce });
+		//let nonce = Nonce::from_entropy_source(&*entropy);
+		//let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce });
+		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce: offer_nonce });
 		let forward_invoice_request_path = self
 			.create_blinded_paths(peers, context)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))?;
