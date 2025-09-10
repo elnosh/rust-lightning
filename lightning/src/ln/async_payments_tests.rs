@@ -223,7 +223,7 @@ fn pass_async_payments_oms(
 
 	always_online_recipient_counterparty
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			static_invoice,
 			reply_path,
 			invoice_request,
@@ -604,7 +604,7 @@ fn ignore_unexpected_static_invoice() {
 	// Check that the sender will ignore the unexpected static invoice.
 	nodes[1]
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			unexpected_static_invoice,
 			reply_path.clone(),
 			invoice_request.clone(),
@@ -626,7 +626,7 @@ fn ignore_unexpected_static_invoice() {
 	// held_htlc_available onion message.
 	nodes[1]
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			valid_static_invoice.clone(),
 			reply_path.clone(),
 			invoice_request.clone(),
@@ -649,7 +649,7 @@ fn ignore_unexpected_static_invoice() {
 	// Receiving a duplicate invoice will have no effect.
 	nodes[1]
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			valid_static_invoice,
 			reply_path,
 			invoice_request,
@@ -738,7 +738,7 @@ fn ignore_duplicate_invoice() {
 
 	always_online_node
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			static_invoice.clone(),
 			reply_path,
 			invoice_request,
@@ -746,7 +746,7 @@ fn ignore_duplicate_invoice() {
 		)
 		.unwrap();
 
-	// After calling `send_response_static_invoice_request` the next two messages should be the
+	// After calling `respond_to_static_invoice_request` the next two messages should be the
 	// invoice request to the intended for the async recipient and the static invoice to the
 	// payer.
 	let invreq_om =
@@ -835,7 +835,7 @@ fn ignore_duplicate_invoice() {
 
 	always_online_node
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			static_invoice.clone(),
 			reply_path,
 			invoice_request,
@@ -857,15 +857,12 @@ fn ignore_duplicate_invoice() {
 	let invoice_om =
 		async_recipient.onion_messenger.next_onion_message_for_peer(sender_node_id).unwrap();
 
-	let (invoice, context) = match sender.onion_messenger.peel_onion_message(&invoice_om) {
-		Ok(PeeledOnion::Offers(OffersMessage::Invoice(invoice), context, _)) => (invoice, context),
+	let invoice = match sender.onion_messenger.peel_onion_message(&invoice_om) {
+		Ok(PeeledOnion::Offers(OffersMessage::Invoice(invoice), _, _)) => invoice,
 		_ => panic!(),
 	};
 
-	assert!(matches!(
-		sender.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
-		Ok(())
-	));
+	sender.onion_messenger.handle_onion_message(async_recipient_id, &invoice_om);
 
 	let mut events = sender.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1008,7 +1005,7 @@ fn expired_static_invoice_fail() {
 
 	nodes[1]
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			static_invoice.clone(),
 			reply_path,
 			invoice_request,
@@ -1093,7 +1090,7 @@ fn timeout_unreleased_payment() {
 
 	server
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			static_invoice.clone(),
 			reply_path,
 			invoice_request,
@@ -2617,7 +2614,7 @@ fn invoice_request_forwarded_to_async_recipient() {
 
 	always_online_node
 		.node
-		.send_response_static_invoice_request(
+		.respond_to_static_invoice_request(
 			static_invoice,
 			reply_path,
 			invoice_request,

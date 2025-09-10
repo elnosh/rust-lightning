@@ -1132,13 +1132,13 @@ where
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Responder`]: crate::onion_message::messenger::Responder
 	pub fn enqueue_invoice_request_to_forward(
-		&self, invoice_request: InvoiceRequest, invoice_request_path: BlindedMessagePath,
+		&self, invoice_request: InvoiceRequest, destination: BlindedMessagePath,
 		reply_path: Responder,
 	) {
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		let message = OffersMessage::InvoiceRequest(invoice_request);
 		let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-			destination: Destination::BlindedPath(invoice_request_path),
+			destination: Destination::BlindedPath(destination),
 			reply_path: reply_path.into_blinded_path(),
 		};
 		pending_offers_messages.push((message, instructions));

@@ -5296,7 +5296,7 @@ where
 	/// [`Event::StaticInvoiceRequested`]. Also forwards the payer's [`InvoiceRequest`] to the
 	/// async recipient, in case the recipient is online to provide the payer with a fresh
 	/// [`Bolt12Invoice`].
-	pub fn send_response_static_invoice_request(
+	pub fn respond_to_static_invoice_request(
 		&self, invoice: StaticInvoice, responder: Responder, invoice_request: InvoiceRequest,
 		invoice_request_path: BlindedMessagePath,
 	) -> Result<(), Bolt12SemanticError> {

@@ -1658,9 +1658,9 @@ pub enum Event {
 		/// The path to where invoice requests will be forwarded. If we receive an invoice
 		/// request, we'll forward it to the async recipient over this path in case the
 		/// recipient is online to provide a new invoice. This path should be persisted and
-		/// later provided to [`ChannelManager::send_response_static_invoice_request`].
+		/// later provided to [`ChannelManager::respond_to_static_invoice_request`].
 		///
-		/// [`ChannelManager::send_response_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::send_response_static_invoice_request
+		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		invoice_request_path: BlindedMessagePath,
 		/// Useful for the recipient to replace a specific invoice stored by us as the static invoice
 		/// server.
@@ -1694,14 +1694,14 @@ pub enum Event {
 	///
 	/// If we previously persisted a [`StaticInvoice`] from an [`Event::PersistStaticInvoice`] that
 	/// matches the below `recipient_id` and `invoice_slot`, that invoice should be retrieved now
-	/// and forwarded to the payer via [`ChannelManager::send_response_static_invoice_request`].
+	/// and forwarded to the payer via [`ChannelManager::respond_to_static_invoice_request`].
 	/// The invoice request path previously persisted from [`Event::PersistStaticInvoice`] should
-	/// also be provided in [`ChannelManager::send_response_static_invoice_request`].
+	/// also be provided in [`ChannelManager::respond_to_static_invoice_request`].
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`ChannelManager::send_response_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::send_response_static_invoice_request
+	/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 	StaticInvoiceRequested {
 		/// An identifier for the recipient previously surfaced in
 		/// [`Event::PersistStaticInvoice::recipient_id`]. Useful when paired with the `invoice_slot` to
@@ -1712,15 +1712,15 @@ pub enum Event {
 		/// retrieve the [`StaticInvoice`] requested by the payer.
 		invoice_slot: u16,
 		/// The path over which the [`StaticInvoice`] will be sent to the payer, which should be
-		/// provided to [`ChannelManager::send_response_static_invoice_request`] along with the invoice.
+		/// provided to [`ChannelManager::respond_to_static_invoice_request`] along with the invoice.
 		///
-		/// [`ChannelManager::send_response_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::send_response_static_invoice_request
+		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		reply_path: Responder,
 		/// The invoice request that will be forwarded to the async recipient to give the
 		/// recipient a chance to provide an invoice in case it is online. It should be
-		/// provided to [`ChannelManager::send_response_static_invoice_request`].
+		/// provided to [`ChannelManager::respond_to_static_invoice_request`].
 		///
-		/// [`ChannelManager::send_response_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::send_response_static_invoice_request
+		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		invoice_request: InvoiceRequest,
 	},
 	/// Indicates that a channel funding transaction constructed interactively is ready to be
