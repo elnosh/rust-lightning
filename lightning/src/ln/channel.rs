@@ -433,6 +433,7 @@ struct OutboundHTLCOutput {
 	skimmed_fee_msat: Option<u64>,
 	send_timestamp: Option<Duration>,
 	hold_htlc: Option<()>,
+	accountable: Option<bool>,
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
@@ -9654,7 +9655,7 @@ where
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
 					hold_htlc: htlc.hold_htlc,
-					accountable: None,
+					accountable: accountable_from_bool(htlc.accountable.unwrap_or(false)),
 				});
 			}
 		}
@@ -12614,6 +12615,7 @@ where
 			skimmed_fee_msat,
 			send_timestamp,
 			hold_htlc: hold_htlc.then(|| ()),
+			accountable: Some(accountable),
 		});
 		self.context.next_holder_htlc_id += 1;
 
@@ -14468,6 +14470,7 @@ where
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 		let mut pending_outbound_held_htlc_flags: Vec<Option<()>> = Vec::new();
+		let mut pending_outbound_accountable: Vec<Option<bool>> = Vec::new();
 
 		(self.context.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for htlc in self.context.pending_outbound_htlcs.iter() {
@@ -14511,6 +14514,7 @@ where
 			pending_outbound_skimmed_fees.push(htlc.skimmed_fee_msat);
 			pending_outbound_blinding_points.push(htlc.blinding_point);
 			pending_outbound_held_htlc_flags.push(htlc.hold_htlc);
+			pending_outbound_accountable.push(htlc.accountable);
 		}
 
 		let holding_cell_htlc_update_count = self.context.holding_cell_htlc_updates.len();
@@ -14806,6 +14810,7 @@ where
 			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
 			(71, holding_cell_accountable_flags, optional_vec), // Added in 0.3
+			(73, pending_outbound_accountable, optional_vec), // Added in 0.3
 		});
 
 		Ok(())
@@ -14955,6 +14960,7 @@ where
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
+				accountable: None,
 			});
 		}
 
@@ -15174,6 +15180,7 @@ where
 
 		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
+		let mut pending_outbound_accountable_opt: Option<Vec<Option<bool>>> = None;
 		let mut holding_cell_accountable_opt: Option<Vec<Option<bool>>> = None;
 
 		read_tlv_fields!(reader, {
@@ -15223,6 +15230,7 @@ where
 			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(71, holding_cell_accountable_opt, optional_vec), // Added in 0.3
+			(73, pending_outbound_accountable_opt, optional_vec), // Added in 0.3
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -15359,7 +15367,16 @@ where
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-
+		if let Some(held_htlcs) = pending_outbound_accountable_opt {
+			let mut iter = held_htlcs.into_iter();
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				htlc.accountable = iter.next().ok_or(DecodeError::InvalidValue)?;
+			}
+			// We expect all accountable HTLC signals to be consumed above
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
 		if let Some(attribution_data_list) = removed_htlc_attribution_data {
 			let mut removed_htlcs = pending_inbound_htlcs.iter_mut().filter_map(|status| {
 				if let InboundHTLCState::LocalRemoved(reason) = &mut status.state {
@@ -15932,6 +15949,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
+			accountable: None,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -16387,6 +16405,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
+			accountable: None,
 		};
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
@@ -16785,6 +16804,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
+			accountable: None,
 		});
 
 		let payment_preimage_3 =
@@ -16800,6 +16820,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
+			accountable: None,
 		});
 
 		let payment_preimage_4 =
@@ -17215,6 +17236,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
+			accountable: None,
 		});
 
 		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
@@ -17228,6 +17250,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
+			accountable: None,
 		});
 
 		test_commitment!("304402207d0870964530f97b62497b11153c551dca0a1e226815ef0a336651158da0f82402200f5378beee0e77759147b8a0a284decd11bfd2bc55c8fafa41c134fe996d43c8",
@@ -17469,6 +17492,7 @@ mod tests {
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
+				accountable: None,
 			}),
 		);
 
@@ -17559,6 +17583,7 @@ mod tests {
 					blinding_point: None,
 					send_timestamp: None,
 					hold_htlc: None,
+					accountable: None,
 				}
 			}),
 		);
@@ -17633,6 +17658,7 @@ mod tests {
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
+				accountable: None,
 			}),
 		);
 
