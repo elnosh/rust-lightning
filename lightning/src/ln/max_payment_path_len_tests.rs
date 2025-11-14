@@ -93,7 +93,7 @@ fn large_payment_metadata() {
 		.node
 		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params, Retry::Attempts(0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let path = &[&nodes[1]];
@@ -175,7 +175,7 @@ fn large_payment_metadata() {
 		.node
 		.send_payment(payment_hash_2, onion_allowing_2_hops, id, route_params, Retry::Attempts(0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let path = &[&nodes[1], &nodes[2]];
