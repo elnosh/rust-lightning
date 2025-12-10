@@ -28,7 +28,8 @@ use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
-use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent};
+use crate::ln::msgs::{accountable_from_bool, BaseMessageHandler, MessageSendEvent};
+use crate::ln::resource_manager::{ForwardingOutcome, ResourceManager, ResourceManagerConfig};
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
@@ -81,6 +82,7 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning_invoice::RawBolt11Invoice;
 use lightning_types::payment::{PaymentHash, PaymentPreimage};
+use types::features::ChannelTypeFeatures;
 
 use crate::io;
 use crate::prelude::*;
@@ -1664,6 +1666,45 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		core::mem::swap(&mut ret, &mut pending_events);
 		ret
+	}
+}
+
+// TODO: ADD TEST RESOURCE MANAGER HERE
+
+pub struct TestResourceManager {
+	pub config: ResourceManagerConfig,
+}
+
+impl TestResourceManager {
+	pub fn new() -> Self {
+		TestResourceManager { config: ResourceManagerConfig::default() }
+	}
+}
+
+impl ResourceManager for TestResourceManager {
+	fn add_channel(
+		&self, _channel_type: ChannelTypeFeatures, channel_id: u64,
+		max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+	) -> Result<(), ()> {
+		Ok(())
+	}
+
+	fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
+		Ok(())
+	}
+
+	fn add_htlc(
+		&self, _incoming_channel_id: u64, _incoming_amount_msat: u64, _incoming_cltv_expiry: u32,
+		_outgoing_channel_id: u64, _outgoing_amount_msat: u64, _incoming_accountable: bool,
+		_htlc_id: u64, _height_added: u32, _added_at: u64,
+	) -> Result<ForwardingOutcome, ()> {
+		Ok(ForwardingOutcome::Forward(accountable_from_bool(false)))
+	}
+
+	fn resolve_htlc(
+		&self, _incoming_channel_id: u64, _htlc_id: u64, _settled: bool, _resolved_at: u64,
+	) -> Result<(), ()> {
+		Ok(())
 	}
 }
 

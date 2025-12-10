@@ -55,7 +55,7 @@ use crate::util::config::{ChannelConfigUpdate, MaxDustHTLCExposure, UserConfig};
 use crate::util::errors::APIError;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::test_utils::{self, WatchtowerPersister};
+use crate::util::test_utils::{self, TestResourceManager, WatchtowerPersister};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::locktime::absolute::LockTime;
@@ -835,7 +835,7 @@ pub fn test_justice_tx_htlc_timeout() {
 		revoked_local_txn[1].input[0].witness.last().unwrap().len(),
 		OFFERED_HTLC_SCRIPT_WEIGHT
 	); // HTLC-Timeout
-   // Revoke the old state
+	// Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 
 	{
@@ -4805,6 +4805,7 @@ pub fn test_key_derivation_params() {
 		fee_estimator: &chanmon_cfgs[0].fee_estimator,
 		router,
 		message_router,
+		resource_manager: TestResourceManager::new(),
 		chain_monitor,
 		keys_manager: &keys_manager,
 		network_graph,
@@ -6058,7 +6059,7 @@ pub fn test_announce_disable_channels() {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
-														   // Check that each channel gets updated exactly once
+															   // Check that each channel gets updated exactly once
 				if chans_disabled
 					.insert(msg.contents.short_channel_id, msg.contents.timestamp)
 					.is_some()

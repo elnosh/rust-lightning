@@ -951,7 +951,7 @@ pub type SimpleRefPeerManager<
 	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, 'mr, SD, M, T, F, C, L
 > = PeerManager<
 	SD,
-	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'mr, M, T, F, L>,
+	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'mr, 'j, M, T, F, L>,
 	&'f P2PGossipSync<&'graph NetworkGraph<&'logger L>, C, &'logger L>,
 	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, M, T, F, L>,
 	&'logger L,
@@ -1203,7 +1203,8 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref>
 		IgnoringMessageHandler,
 		NS,
 		IgnoringMessageHandler,
-	> where
+	>
+where
 	RM::Target: RoutingMessageHandler,
 	L::Target: Logger,
 	NS::Target: NodeSigner,

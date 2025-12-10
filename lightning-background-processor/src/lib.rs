@@ -39,6 +39,7 @@ use lightning::events::EventHandler;
 use lightning::events::EventsProvider;
 use lightning::events::ReplayEvent;
 use lightning::events::{Event, PathFailure};
+use lightning::ln::resource_manager::DefaultResourceManager;
 use lightning::util::ser::Writeable;
 
 use lightning::ln::channelmanager::AChannelManager;
@@ -259,7 +260,8 @@ impl<
 		G,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
+	>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::Rapid`] variant.
@@ -276,7 +278,8 @@ impl<'a, L: Deref>
 		&'a NetworkGraph<L>,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
+	>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::None`] variant.
@@ -362,6 +365,10 @@ type DynMessageRouter = lightning::onion_message::messenger::DefaultMessageRoute
 	&'static (dyn EntropySource + Send + Sync),
 >;
 
+#[cfg(not(c_bindings))]
+type DynResourceManager =
+	DefaultResourceManager<'static, &'static (dyn EntropySource + Send + Sync)>;
+
 #[cfg(all(not(c_bindings), not(taproot)))]
 type DynSignerProvider = dyn lightning::sign::SignerProvider<EcdsaSigner = lightning::sign::InMemorySigner>
 	+ Send
@@ -384,6 +391,7 @@ type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
 	&'static (dyn FeeEstimator + Send + Sync),
 	&'static DynRouter,
 	&'static DynMessageRouter,
+	&'static DynResourceManager,
 	&'static (dyn Logger + Send + Sync),
 >;
 
@@ -1855,7 +1863,7 @@ mod tests {
 	use lightning::util::sweep::{
 		OutputSpendStatus, OutputSweeper, OutputSweeperSync, PRUNE_DELAY_BLOCKS,
 	};
-	use lightning::util::test_utils;
+	use lightning::util::test_utils::{self, TestResourceManager};
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::utils::time::DefaultTimeProvider;
 	use lightning_liquidity::{ALiquidityManagerSync, LiquidityManager, LiquidityManagerSync};
@@ -1910,6 +1918,7 @@ mod tests {
 				Arc<KeysManager>,
 			>,
 		>,
+		Arc<TestResourceManager>,
 		Arc<test_utils::TestLogger>,
 	>;
 
@@ -2335,6 +2344,7 @@ mod tests {
 				Arc::clone(&network_graph),
 				Arc::clone(&keys_manager),
 			));
+			let resource_manager = Arc::new(TestResourceManager::new());
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store =
 				Arc::new(Persister::new(format!("{}_persister_{}", &persist_dir, i).into()));
@@ -2358,6 +2368,7 @@ mod tests {
 				Arc::clone(&tx_broadcaster),
 				Arc::clone(&router),
 				Arc::clone(&msg_router),
+				Arc::clone(&resource_manager),
 				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
 				Arc::clone(&keys_manager),

@@ -1,3 +1,5 @@
+//! Resource management
+
 use bitcoin::{
 	hashes::{sha256d::Hash as Sha256dHash, Hash},
 	io::Read,
@@ -18,20 +20,25 @@ use crate::{
 
 use super::msgs::{accountable_into_bool, DecodeError, ExperimentalAccountable};
 
-pub trait ResourceManager: Writeable {
+/// Manage stuff. TODO: FINISH DOCS. should it be `Writeable`?
+pub trait ResourceManager {
+	/// add channel
 	fn add_channel(
 		&self, channel_type: &ChannelTypeFeatures, channel_id: u64,
 		max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
 	) -> Result<(), ()>;
 
+	/// remove channel
 	fn remove_channel(&self, channel_id: u64) -> Result<(), ()>;
 
+	/// add htlcs
 	fn add_htlc(
 		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
 		outgoing_channel_id: u64, outgoing_amount_msat: u64, incoming_accountable: bool,
 		htlc_id: u64, height_added: u32, added_at: u64,
 	) -> Result<ForwardingOutcome, ()>;
 
+	/// resolve htlcs
 	fn resolve_htlc(
 		&self, incoming_channel_id: u64, htlc_id: u64, settled: bool, resolved_at: u64,
 	) -> Result<(), ()>;
@@ -47,12 +54,19 @@ const ACCEPTABLE_RESOLUTION_PERIOD_SECS: u8 = 90;
 /// weeks.
 const REVENUE_WINDOW: u64 = 2016 * 10 * 60;
 
+/// Config
 pub struct ResourceManagerConfig {
+	/// TODO: add
 	pub general_allocation_pct: u8,
+	/// TODO: add
 	pub congestion_allocation_pct: u8,
+	/// TODO: add
 	pub protected_allocation_pct: u8,
+	/// TODO: add
 	pub resolution_period: Duration,
+	/// TODO: add
 	pub revenue_window: Duration,
+	/// TODO: add
 	pub reputation_multiplier: u8,
 }
 
@@ -78,8 +92,11 @@ impl Default for ResourceManagerConfig {
 	}
 }
 
+/// Fwding outcome
 pub enum ForwardingOutcome {
+	/// TODO: add
 	Forward(ExperimentalAccountable),
+	/// TODO: add
 	Fail,
 }
 
@@ -640,6 +657,7 @@ where
 	}
 }
 
+/// Resource manager impl
 pub struct DefaultResourceManager<'a, ES: Deref>
 where
 	ES::Target: EntropySource,
@@ -653,6 +671,7 @@ impl<'a, ES: Deref> DefaultResourceManager<'a, ES>
 where
 	ES::Target: EntropySource,
 {
+	/// TODO: add
 	pub fn new(config: ResourceManagerConfig, entropy_source: &'a ES) -> Self {
 		DefaultResourceManager { config, entropy_source, channels: Mutex::new(new_hash_map()) }
 	}
