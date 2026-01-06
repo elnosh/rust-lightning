@@ -256,7 +256,8 @@ impl Default for ChannelHandshakeConfig {
 			their_channel_reserve_proportional_millionths: 10_000,
 			negotiate_anchors_zero_fee_htlc_tx: false,
 			negotiate_anchor_zero_fee_commitments: false,
-			our_max_accepted_htlcs: 50,
+			//our_max_accepted_htlcs: 50,
+			our_max_accepted_htlcs: 450,
 		}
 	}
 }

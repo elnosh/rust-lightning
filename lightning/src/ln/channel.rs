@@ -4330,6 +4330,14 @@ where
 		funding.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
 	}
 
+	pub fn get_holder_max_htlc_value_in_flight_msat(&self) -> u64 {
+		self.holder_max_htlc_value_in_flight_msat
+	}
+
+	pub fn get_holder_max_accepted_htlcs(&self) -> u16 {
+		self.holder_max_accepted_htlcs
+	}
+
 	/// Allowed in any state (including after shutdown)
 	pub fn get_counterparty_htlc_minimum_msat(&self) -> u64 {
 		self.counterparty_htlc_minimum_msat

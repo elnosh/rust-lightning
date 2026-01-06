@@ -25,7 +25,7 @@ fn test_accountable_forwarding_with_override(
 		.node
 		.send_payment(payment_hash, onion_fields, payment_id, route_params, Retry::Attempts(0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let updates_ab = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	assert_eq!(updates_ab.update_add_htlcs.len(), 1);
@@ -39,7 +39,7 @@ fn test_accountable_forwarding_with_override(
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &htlc_ab);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates_ab.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[1], false);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let updates_bc = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
 	assert_eq!(updates_bc.update_add_htlcs.len(), 1);
@@ -53,7 +53,7 @@ fn test_accountable_forwarding_with_override(
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), htlc_bc);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &updates_bc.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[2], false);
-	check_added_monitors!(nodes[2], 0);
+	check_added_monitors(&nodes[2], 0);
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, 100_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }

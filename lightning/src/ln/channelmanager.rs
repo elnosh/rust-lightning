@@ -135,6 +135,8 @@ use crate::util::wakers::{Future, Notifier};
 #[cfg(test)]
 use crate::blinded_path::payment::BlindedPaymentPath;
 
+use super::resource_manager::{DefaultResourceManager, ResourceManagerConfig};
+
 #[cfg(feature = "dnssec")]
 use {
 	crate::blinded_path::message::DNSResolverContext,
@@ -2678,6 +2680,8 @@ pub struct ChannelManager<
 	tx_broadcaster: T,
 	router: R,
 
+	resource_manager: DefaultResourceManager<ES>,
+
 	#[cfg(test)]
 	pub(super) flow: OffersMessageFlow<MR, L>,
 	#[cfg(not(test))]
@@ -3729,7 +3733,7 @@ fn create_htlc_intercepted_event(
 impl<
 		M: Deref,
 		T: Deref,
-		ES: Deref,
+		ES: Deref + Clone,
 		NS: Deref,
 		SP: Deref,
 		F: Deref,
@@ -3786,6 +3790,9 @@ where
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
 		);
 
+		let resource_manager_config = ResourceManagerConfig::default();
+		let resource_manager = DefaultResourceManager::new(resource_manager_config, entropy_source.clone());
+
 		ChannelManager {
 			config: RwLock::new(config),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -3794,6 +3801,8 @@ where
 			tx_broadcaster,
 			router,
 			flow,
+
+			resource_manager,
 
 			best_block: RwLock::new(params.best_block),
 
@@ -3845,7 +3854,30 @@ where
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		}
 	}
+}
 
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
 	fn send_channel_ready(
 		&self, pending_msg_events: &mut Vec<MessageSendEvent>, channel: &FundedChannel<SP>,
 		channel_ready_msg: msgs::ChannelReady,
@@ -4727,6 +4759,13 @@ where
 			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 			if let Some(short_id) = chan.funding.get_short_channel_id() {
 				short_to_chan_info.remove(&short_id);
+				if let Err(_) = self.resource_manager.remove_channel(short_id) {
+					log_error!(
+						logger,
+						"Failed to remove channel {} from resource manager",
+						short_id
+					);
+				}
 			} else {
 				// If the channel was never confirmed on-chain prior to its closure, remove the
 				// outbound SCID alias we used for it from the collision-prevention set. While we
@@ -7598,6 +7637,7 @@ where
 					let htlc_source = HTLCSource::PreviousHopData(payment.htlc_previous_hop_data());
 					let PendingAddHTLCInfo {
 						prev_outbound_scid_alias,
+						prev_htlc_id,
 						forward_info:
 							PendingHTLCInfo {
 								payment_hash,
@@ -7606,6 +7646,7 @@ where
 								routing,
 								skimmed_fee_msat,
 								incoming_accountable,
+								incoming_amt_msat,
 								..
 							},
 						..
@@ -7698,6 +7739,29 @@ where
 						short_chan_id,
 						channel_description
 					);
+
+					let block_height = self.current_best_block().height;
+					log_info!(logger, "ADDING HTLC to resource manager. Incoming {}, outgoing {}, incoming amt {}, outgoing amt {}, incoming expiry {}, current height {}, htlc id {}, incoming accountable {}", prev_outbound_scid_alias, optimal_channel.context.outbound_scid_alias(), incoming_amt_msat.unwrap(), outgoing_amt_msat, routing.incoming_cltv_expiry().unwrap(), block_height, prev_htlc_id, incoming_accountable.unwrap_or(false));
+					let fwding_outcome = self.resource_manager.add_htlc(
+						*prev_outbound_scid_alias,
+						// `incoming_amt_msat` was added in 0.0.113 so it should be
+						// safe to unwrap here.
+						incoming_amt_msat.unwrap(),
+						routing.incoming_cltv_expiry().unwrap(),
+						optimal_channel.context.outbound_scid_alias(),
+						*outgoing_amt_msat,
+						incoming_accountable.unwrap_or(false),
+						*prev_htlc_id,
+						block_height,
+						self.duration_since_epoch().as_secs(),
+					);
+
+					if let Ok(outcome) = fwding_outcome {
+						log_debug!(logger, "Forwarding outcome from resource manager: {}", outcome);
+					} else {
+						log_error!(logger, "Resource manager failed to add htlc");
+					}
+
 					if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
 						*outgoing_amt_msat,
 						*payment_hash,
@@ -7749,6 +7813,20 @@ where
 					{
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+
+						log_info!(logger, "Resolving HTLC to resource manager: incoming channel {}, outgoing channel {}, htlc id {}, settled {}", short_chan_id, chan.context.outbound_scid_alias(), htlc_id, false);
+						if let Err(_) = self.resource_manager.resolve_htlc(
+							short_chan_id,
+							htlc_id,
+							chan.context.outbound_scid_alias(),
+							false,
+							self.duration_since_epoch().as_secs(),
+						) {
+							log_error!(logger, "error resolving HTLC in resource manager");
+						} else {
+							log_info!(logger, "resolved HTLC in resource manager");
+						}
+
 						Some((chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger), htlc_id))
 					} else {
 						self.forwarding_channel_not_found(
@@ -9057,7 +9135,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9088,14 +9167,15 @@ where
 			payment_info,
 			attribution_data,
 			completion_action,
-		)
+		);
 	}
 
 	fn claim_mpp_part<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9381,7 +9461,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
-		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>, next_scid: Option<u64>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
 		let startup_replay =
@@ -9437,6 +9517,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let prev_channel_id = hop_data.channel_id;
 				let prev_user_channel_id = hop_data.user_channel_id;
 				let prev_node_id = hop_data.counterparty_node_id;
+				let prev_scid = hop_data.prev_outbound_scid_alias;
+				let prev_htlc_id = hop_data.htlc_id;
+
 				let completed_blocker =
 					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 
@@ -9538,6 +9621,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								} else {
 									None
 								};
+
+						println!("Resolving HTLC to resource manager: incoming channel {}, outgoing channel {}, htlc id {}, settled {}", prev_scid, next_scid.unwrap(), prev_htlc_id, true);
+							if let Err(_) = self.resource_manager.resolve_htlc(
+								prev_scid,
+								prev_htlc_id,
+								// TODO: DO NOT UNWRAP HERE
+								next_scid.unwrap(),
+								true,
+								self.duration_since_epoch().as_secs(),
+							) {
+								println!("error resolving HTLC in resource manager");
+							} else {
+								println!("resolved HTLC in resource manager");
+							}
+
+
 							debug_assert!(
 								skimmed_fee_msat <= total_fee_earned_msat,
 								"skimmed_fee_msat must always be included in total_fee_earned_msat"
@@ -11181,6 +11280,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 
+					if let Ok(_) = self.resource_manager.add_channel(
+						chan.funding.get_channel_type(),
+						chan.context.outbound_scid_alias(),
+						chan.context.get_holder_max_htlc_value_in_flight_msat(),
+						chan.context.get_holder_max_accepted_htlcs()
+					) {
+						log_info!(logger, "Added channel {} to resource manager", chan.context.outbound_scid_alias());
+					} else {
+						// TODO: return err
+						panic!("Resource manager could not add channel")
+					}
+
 					{
 						let mut pending_events = self.pending_events.lock().unwrap();
 						emit_initial_channel_ready_event!(pending_events, chan);
@@ -11414,6 +11525,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
+		let next_scid;
 		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat, send_timestamp) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
@@ -11449,6 +11561,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// process the RAA as messages are processed from single peers serially.
 						funding_txo = chan.funding.get_funding_txo().expect("We won't accept a fulfill until funded");
 						next_user_channel_id = chan.context.get_user_id();
+						next_scid = chan.context.outbound_scid_alias();
 						res
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
@@ -11468,6 +11581,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
+			Some(next_scid),
 			msg.attribution_data,
 			send_timestamp,
 		);
@@ -12375,6 +12489,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
+								None,
 								None,
 								None,
 								None,
@@ -16896,6 +17011,8 @@ where
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
 
+		self.resource_manager.write(writer)?;
+
 		// Remove the SpliceFailed events added earlier.
 		events.truncate(event_count);
 
@@ -17155,7 +17272,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
-		ES: Deref,
+		ES: Deref + Clone,
 		NS: Deref,
 		SP: Deref,
 		F: Deref,
@@ -17188,7 +17305,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
-		ES: Deref,
+		ES: Deref + Clone,
 		NS: Deref,
 		SP: Deref,
 		F: Deref,
@@ -18650,6 +18767,8 @@ where
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);
 
+		let resource_manager = DefaultResourceManager::read(reader, args.entropy_source.clone())?;
+
 		let channel_manager = ChannelManager {
 			chain_hash,
 			fee_estimator: bounded_fee_estimator,
@@ -18657,6 +18776,8 @@ where
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
 			flow,
+
+			resource_manager,
 
 			best_block: RwLock::new(best_block),
 
@@ -18983,6 +19104,7 @@ where
 				downstream_node_id,
 				downstream_funding,
 				downstream_channel_id,
+				None,
 				None,
 				None,
 				None,
