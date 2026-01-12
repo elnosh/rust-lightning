@@ -88,6 +88,9 @@ use crate::ln::outbound_payment::{
 	OutboundPayments, PendingOutboundPayment, RecipientCustomTlvs, RetryableInvoiceRequest,
 	SendAlongPathArgs, StaleExpiration,
 };
+use crate::ln::resource_manager::{
+	DefaultResourceManager, ForwardingOutcome, ResourceManagerConfig,
+};
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
@@ -2626,6 +2629,8 @@ pub struct ChannelManager<
 	tx_broadcaster: T,
 	router: R,
 
+	resource_manager: DefaultResourceManager<ES>,
+
 	#[cfg(test)]
 	pub(super) flow: OffersMessageFlow<MR, L>,
 	#[cfg(not(test))]
@@ -3424,6 +3429,7 @@ impl<
 		params: ChainParameters, current_timestamp: u32,
 	) -> Self
 	where
+		ES: Clone,
 		L: Clone,
 	{
 		let mut secp_ctx = Secp256k1::new();
@@ -3438,6 +3444,9 @@ impl<
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
 		);
 
+		let resource_manager_config = ResourceManagerConfig::default();
+		let resource_manager = DefaultResourceManager::new(resource_manager_config, entropy_source.clone());
+
 		ChannelManager {
 			config: RwLock::new(config),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -3446,6 +3455,7 @@ impl<
 			tx_broadcaster,
 			router,
 			flow,
+			resource_manager,
 
 			best_block: RwLock::new(params.best_block),
 
@@ -3497,7 +3507,20 @@ impl<
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		}
 	}
+}
 
+impl<
+		M: chain::Watch<SP::EcdsaSigner>,
+		T: BroadcasterInterface,
+		ES: EntropySource,
+		NS: NodeSigner,
+		SP: SignerProvider,
+		F: FeeEstimator,
+		R: Router,
+		MR: MessageRouter,
+		L: Logger,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+{
 	fn send_channel_ready(
 		&self, pending_msg_events: &mut Vec<MessageSendEvent>, channel: &FundedChannel<SP>,
 		channel_ready_msg: msgs::ChannelReady,
@@ -4415,7 +4438,18 @@ impl<
 					self.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
 				debug_assert!(alias_removed);
 			}
-			short_to_chan_info.remove(&chan.context.outbound_scid_alias());
+
+			let outbound_alias = chan.context.outbound_scid_alias();
+			if let Ok(_) = self.resource_manager.remove_channel(outbound_alias) {
+				log_debug!(logger, "Removed channel {} from resource manager", outbound_alias);
+			} else {
+				log_error!(
+					logger,
+					"Failed to remove channel {} from resource manager",
+					outbound_alias
+				);
+			}
+			short_to_chan_info.remove(&outbound_alias);
 			for scid in chan.context.historical_scids() {
 				short_to_chan_info.remove(scid);
 			}
@@ -7536,6 +7570,7 @@ impl<
 					let htlc_source = HTLCSource::PreviousHopData(payment.htlc_previous_hop_data());
 					let PendingAddHTLCInfo {
 						prev_outbound_scid_alias,
+						prev_htlc_id,
 						forward_info:
 							PendingHTLCInfo {
 								payment_hash,
@@ -7544,6 +7579,7 @@ impl<
 								routing,
 								skimmed_fee_msat,
 								incoming_accountable,
+								incoming_amt_msat,
 								..
 							},
 						..
@@ -7636,6 +7672,35 @@ impl<
 						short_chan_id,
 						channel_description
 					);
+
+					let mut outgoing_accountable = *incoming_accountable;
+					if let Ok(fwd_outcome) = self.resource_manager.add_htlc(
+						*prev_outbound_scid_alias,
+						// `incoming_amt_msat` was added in 0.0.113 so it should be
+						// safe to unwrap here.
+						incoming_amt_msat.unwrap(),
+						routing.incoming_cltv_expiry().unwrap(),
+						optimal_channel.context.outbound_scid_alias(),
+						*outgoing_amt_msat,
+						*incoming_accountable,
+						*prev_htlc_id,
+						self.current_best_block().height,
+						self.duration_since_epoch().as_secs(),
+					) {
+						log_debug!(
+							logger,
+							"Forwarding outcome from resource manager: {}",
+							fwd_outcome
+						);
+
+						outgoing_accountable = match fwd_outcome {
+							ForwardingOutcome::Forward(accountable) => accountable,
+							ForwardingOutcome::Fail => true,
+						}
+					} else {
+						log_error!(logger, "Resource manager failed to add htlc");
+					}
+
 					if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
 						*outgoing_amt_msat,
 						*payment_hash,
@@ -7644,7 +7709,7 @@ impl<
 						onion_packet.clone(),
 						*skimmed_fee_msat,
 						next_blinding_point,
-						*incoming_accountable,
+						outgoing_accountable,
 						&self.fee_estimator,
 						&&logger,
 					) {
@@ -7687,6 +7752,17 @@ impl<
 					{
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+
+						if let Err(_) = self.resource_manager.resolve_htlc(
+							short_chan_id,
+							htlc_id,
+							chan.context.outbound_scid_alias(),
+							false,
+							self.duration_since_epoch().as_secs(),
+						) {
+							log_error!(logger, "Resource manager failed to resolve failed HTLC");
+						}
+
 						Some((chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger), htlc_id))
 					} else {
 						self.forwarding_channel_not_found(
@@ -9014,7 +9090,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9052,7 +9129,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9344,7 +9422,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
-		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>, next_scid: Option<u64>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
 		let startup_replay =
@@ -9408,6 +9486,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let prev_channel_id = hop_data.channel_id;
 				let prev_user_channel_id = hop_data.user_channel_id;
 				let prev_node_id = hop_data.counterparty_node_id;
+				let prev_scid = hop_data.prev_outbound_scid_alias;
+				let prev_htlc_id = hop_data.htlc_id;
+
 				let completed_blocker =
 					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 
@@ -9513,6 +9594,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								skimmed_fee_msat <= total_fee_earned_msat,
 								"skimmed_fee_msat must always be included in total_fee_earned_msat"
 							);
+
+							if let Some(next_scid) = next_scid {
+								let _ = self.resource_manager.resolve_htlc(
+									prev_scid,
+									prev_htlc_id,
+									next_scid,
+									true,
+									self.duration_since_epoch().as_secs(),
+								);
+							}
+
 							(
 								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 									event: events::Event::PaymentForwarded {
@@ -11521,6 +11613,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 
+					let chan_scid = chan.context.outbound_scid_alias();
+					if let Ok(_) = self.resource_manager.add_channel(
+						chan.funding.get_channel_type(),
+						chan_scid,
+						chan.context.get_holder_max_htlc_value_in_flight_msat(),
+						chan.context.get_holder_max_accepted_htlcs()
+					) {
+						log_debug!(logger, "Added channel {} to resource manager", chan_scid);
+					} else {
+						log_error!(logger, "Resource manager could not add channel {}", chan_scid);
+					}
+
 					{
 						let mut pending_events = self.pending_events.lock().unwrap();
 						emit_initial_channel_ready_event!(pending_events, chan);
@@ -11763,6 +11867,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
+		let next_scid;
 		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat, send_timestamp) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
@@ -11798,6 +11903,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// process the RAA as messages are processed from single peers serially.
 						funding_txo = chan.funding.get_funding_txo().expect("We won't accept a fulfill until funded");
 						next_user_channel_id = chan.context.get_user_id();
+						next_scid = chan.context.outbound_scid_alias();
 						res
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
@@ -11817,6 +11923,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
+			Some(next_scid),
 			msg.attribution_data,
 			send_timestamp,
 		);
@@ -12666,6 +12773,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
+								None,
 								None,
 								None,
 								None,
@@ -17165,6 +17273,8 @@ impl<
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
 
+		self.resource_manager.write(writer)?;
+
 		// Remove the SpliceFailed events added earlier.
 		events.truncate(event_count);
 
@@ -17404,7 +17514,7 @@ impl<
 		'a,
 		M: chain::Watch<SP::EcdsaSigner>,
 		T: BroadcasterInterface,
-		ES: EntropySource,
+		ES: EntropySource + Clone,
 		NS: NodeSigner,
 		SP: SignerProvider,
 		F: FeeEstimator,
@@ -17427,7 +17537,7 @@ impl<
 		'a,
 		M: chain::Watch<SP::EcdsaSigner>,
 		T: BroadcasterInterface,
-		ES: EntropySource,
+		ES: EntropySource + Clone,
 		NS: NodeSigner,
 		SP: SignerProvider,
 		F: FeeEstimator,
@@ -18918,6 +19028,8 @@ impl<
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);
 
+		let resource_manager = DefaultResourceManager::read(reader, args.entropy_source.clone())?;
+
 		let channel_manager = ChannelManager {
 			chain_hash,
 			fee_estimator: bounded_fee_estimator,
@@ -18925,6 +19037,7 @@ impl<
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
 			flow,
+			resource_manager,
 
 			best_block: RwLock::new(best_block),
 
@@ -19251,6 +19364,7 @@ impl<
 				downstream_node_id,
 				downstream_funding,
 				downstream_channel_id,
+				None,
 				None,
 				None,
 				None,

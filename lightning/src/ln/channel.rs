@@ -4413,6 +4413,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		funding.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
 	}
 
+	pub fn get_holder_max_htlc_value_in_flight_msat(&self) -> u64 {
+		self.holder_max_htlc_value_in_flight_msat
+	}
+
+	pub fn get_holder_max_accepted_htlcs(&self) -> u16 {
+		self.holder_max_accepted_htlcs
+	}
+
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
 		self.config.options.forwarding_fee_proportional_millionths
 	}

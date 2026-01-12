@@ -249,14 +249,14 @@ impl Default for ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
 			our_htlc_minimum_msat: 1,
-			max_inbound_htlc_value_in_flight_percent_of_channel: 10,
+			max_inbound_htlc_value_in_flight_percent_of_channel: 100,
 			negotiate_scid_privacy: false,
 			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
 			negotiate_anchors_zero_fee_htlc_tx: false,
 			negotiate_anchor_zero_fee_commitments: false,
-			our_max_accepted_htlcs: 50,
+			our_max_accepted_htlcs: 450,
 		}
 	}
 }
