@@ -1160,7 +1160,6 @@ fn client_trusts_lsp_end_to_end_test() {
 	service_node_config.accept_intercept_htlcs = true;
 
 	let mut client_node_config = test_default_channel_config();
-	client_node_config.manually_accept_inbound_channels = true;
 	client_node_config.channel_config.accept_underpaying_htlcs = true;
 	let node_chanmgrs = create_node_chanmgrs(
 		3,
@@ -1633,7 +1632,6 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 	service_node_config.accept_intercept_htlcs = true;
 
 	let mut client_node_config = test_default_channel_config();
-	client_node_config.manually_accept_inbound_channels = true;
 	client_node_config.channel_config.accept_underpaying_htlcs = true;
 
 	let node_chanmgrs = create_node_chanmgrs(
@@ -1824,7 +1822,6 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	service_node_config.accept_intercept_htlcs = true;
 
 	let mut client_node_config = test_default_channel_config();
-	client_node_config.manually_accept_inbound_channels = true;
 	client_node_config.channel_config.accept_underpaying_htlcs = true;
 
 	let node_chanmgrs = create_node_chanmgrs(
@@ -2160,7 +2157,6 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	service_node_config.accept_intercept_htlcs = true;
 
 	let mut client_node_config = test_default_channel_config();
-	client_node_config.manually_accept_inbound_channels = true;
 	client_node_config.channel_config.accept_underpaying_htlcs = true;
 
 	let node_chanmgrs = create_node_chanmgrs(
