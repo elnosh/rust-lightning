@@ -162,7 +162,6 @@ struct PendingHTLC {
 	fee: u64,
 	outgoing_channel: u64,
 	outgoing_accountable: bool,
-	htlc_id: u64,
 	added_at: u64,
 	in_flight_risk: u64,
 	bucket: BucketAssigned,
@@ -174,10 +173,9 @@ impl_writeable_tlv_based!(PendingHTLC, {
 	(4, fee, required),
 	(6, outgoing_channel, required),
 	(8, outgoing_accountable, required),
-	(10, htlc_id, required),
-	(12, added_at, required),
-	(14, in_flight_risk, required),
-	(16, bucket, required),
+	(10, added_at, required),
+	(12, in_flight_risk, required),
+	(14, bucket, required),
 });
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -491,13 +489,14 @@ impl<ES: EntropySource> Channel<ES> {
 
 	fn congestion_eligible(
 		&mut self, pending_htlcs_in_congestion: bool, incoming_amount_msat: u64,
-		outgoing_channel_id: u64, revenue_window: Duration,
+		outgoing_channel_id: u64, revenue_window: Duration, at_timestamp: u64,
 	) -> bool {
 		!pending_htlcs_in_congestion
 			&& self.can_add_htlc_congestion(
 				outgoing_channel_id,
 				incoming_amount_msat,
 				revenue_window,
+				at_timestamp,
 			)
 	}
 
@@ -530,14 +529,12 @@ impl<ES: EntropySource> Channel<ES> {
 
 	fn can_add_htlc_congestion(
 		&mut self, channel_id: u64, htlc_amount_msat: u64, revenue_window: Duration,
+		at_timestamp: u64,
 	) -> bool {
 		let congestion_resources_available =
 			self.congestion_bucket.resources_available(htlc_amount_msat);
-		let misused_congestion = self.has_misused_congestion(
-			channel_id,
-			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-			revenue_window,
-		);
+		let misused_congestion =
+			self.has_misused_congestion(channel_id, at_timestamp, revenue_window);
 
 		let below_slot_limit = htlc_amount_msat
 			<= self.congestion_bucket.liquidity_allocated
@@ -687,6 +684,7 @@ impl<ES: EntropySource> ReadableArgs<ChannelReadArgs<ES>> for Channel<ES> {
 	}
 }
 
+// TODO: add docs
 pub struct DefaultResourceManager<ES: EntropySource> {
 	config: ResourceManagerConfig,
 	entropy_source: Arc<ES>,
@@ -808,8 +806,6 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 
 		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
 
-		// TODO: handle duplicate HTLCs
-
 		let (accountable, bucket_assigned) = if !incoming_accountable {
 			if incoming_channel.general_available(incoming_amount_msat, outgoing_channel_id)? {
 				(false, BucketAssigned::General)
@@ -828,6 +824,7 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 				incoming_amount_msat,
 				outgoing_channel_id,
 				self.config.revenue_window,
+				added_at,
 			) {
 				(true, BucketAssigned::Congestion)
 			} else {
@@ -876,7 +873,6 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 			fee,
 			outgoing_channel: outgoing_channel_id,
 			outgoing_accountable: accountable,
-			htlc_id,
 			added_at,
 			in_flight_risk: in_flight_htlc_risk,
 			bucket: bucket_assigned,
@@ -1497,6 +1493,7 @@ mod tests {
 			incoming_htlc_amount,
 			OUTGOING_SCID,
 			rm.config.revenue_window,
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
 		)
 	}
 
@@ -1966,7 +1963,6 @@ mod tests {
 		assert_eq!(pending_htlc.incoming_amount_msat, HTLC_AMOUNT + FEE_AMOUNT);
 		assert_eq!(pending_htlc.fee, FEE_AMOUNT);
 		assert_eq!(pending_htlc.outgoing_channel, OUTGOING_SCID);
-		assert_eq!(pending_htlc.htlc_id, htlc_id);
 		assert_eq!(pending_htlc.added_at, current_time);
 
 		let expected_in_flight_risk =
