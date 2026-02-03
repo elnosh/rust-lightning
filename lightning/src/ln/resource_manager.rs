@@ -20,6 +20,7 @@ use crate::{
 
 use super::msgs::DecodeError;
 
+// TODO: add docs
 pub trait ResourceManager: Writeable {
 	fn add_channel(
 		&self, channel_type: &ChannelTypeFeatures, channel_id: u64,
@@ -458,13 +459,10 @@ impl<ES: EntropySource> Channel<ES> {
 		let protected_bucket_liquidity_allocated =
 			max_htlc_value_in_flight_msat * protected_bucket_pct as u64 / 100;
 
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		Channel {
-			outgoing_reputation: DecayingAverage::new(window),
-			incoming_revenue: RevenueAverage::new(
-				window,
-				window_count,
-				SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-			),
+			outgoing_reputation: DecayingAverage::new(now, window),
+			incoming_revenue: RevenueAverage::new(window, window_count, now),
 			pending_htlcs: new_hash_map(),
 			general_bucket: GeneralBucket::new(
 				channel_type,
@@ -483,6 +481,24 @@ impl<ES: EntropySource> Channel<ES> {
 				protected_bucket_liquidity_allocated,
 			),
 		}
+	}
+
+	fn general_available(
+		&mut self, incoming_amount_msat: u64, outgoing_channel_id: u64,
+	) -> Result<bool, ()> {
+		Ok(self.general_bucket.can_add_htlc(outgoing_channel_id, incoming_amount_msat)?)
+	}
+
+	fn congestion_eligible(
+		&mut self, pending_htlcs_in_congestion: bool, incoming_amount_msat: u64,
+		outgoing_channel_id: u64, revenue_window: Duration,
+	) -> bool {
+		!pending_htlcs_in_congestion
+			&& self.can_add_htlc_congestion(
+				outgoing_channel_id,
+				incoming_amount_msat,
+				revenue_window,
+			)
 	}
 
 	fn misused_congestion(&mut self, channel_id: u64, misuse_timestamp: u64) {
@@ -528,6 +544,18 @@ impl<ES: EntropySource> Channel<ES> {
 				/ self.congestion_bucket.slots_allocated as u64;
 
 		congestion_resources_available && !misused_congestion && below_slot_limit
+	}
+
+	fn sufficient_reputation(
+		&mut self, in_flight_htlc_risk: u64, outgoing_reputation: i64,
+		outgoing_in_flight_risk: u64, at_timestamp: u64,
+	) -> Result<bool, ()> {
+		let incoming_revenue_threshold = self.incoming_revenue.value_at_timestamp(at_timestamp)?;
+
+		Ok(outgoing_reputation
+			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
+			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
+			>= incoming_revenue_threshold)
 	}
 }
 
@@ -710,69 +738,6 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 			}
 		}
 	}
-
-	fn general_available(
-		&self, incoming_channel_id: u64, incoming_amount_msat: u64, outgoing_channel_id: u64,
-	) -> Result<bool, ()> {
-		let mut channels_lock = self.channels.lock().unwrap();
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
-
-		let can_add_htlc = incoming_channel
-			.general_bucket
-			.can_add_htlc(outgoing_channel_id, incoming_amount_msat)?;
-
-		Ok(can_add_htlc)
-	}
-
-	fn congestion_eligible(
-		&self, incoming_channel_id: u64, incoming_amount_msat: u64, outgoing_channel_id: u64,
-	) -> Result<bool, ()> {
-		let mut channels_lock = self.channels.lock().unwrap();
-
-		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
-		let pending_htlcs_in_congestion = outgoing_channel
-			.pending_htlcs
-			.iter()
-			.find(|(htlc_ref, pending_htlc)| {
-				htlc_ref.incoming_channel_id == incoming_channel_id
-					&& pending_htlc.bucket == BucketAssigned::Congestion
-			})
-			.is_some();
-
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
-
-		Ok(!pending_htlcs_in_congestion
-			&& incoming_channel.can_add_htlc_congestion(
-				outgoing_channel_id,
-				incoming_amount_msat,
-				self.config.revenue_window,
-			))
-	}
-
-	fn sufficient_reputation(
-		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
-		outgoing_channel_id: u64, outgoing_amount_msat: u64, height_added: u32,
-	) -> Result<bool, ()> {
-		let mut channels_lock = self.channels.lock().unwrap();
-
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-		let incoming_revenue_threshold =
-			incoming_channel.incoming_revenue.value_at_timestamp(now)?;
-
-		let fee = incoming_amount_msat - outgoing_amount_msat;
-		let in_flight_htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
-
-		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
-		let outgoing_reputation = outgoing_channel.outgoing_reputation.value_at_timestamp(now)?;
-		let outgoing_in_flight_risk: u64 =
-			outgoing_channel.pending_htlcs.iter().map(|htlc| htlc.1.in_flight_risk).sum();
-
-		Ok(outgoing_reputation
-			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
-			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
-			>= incoming_revenue_threshold)
-	}
 }
 
 impl<ES: EntropySource> DefaultResourceManager<ES> {
@@ -822,61 +787,63 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 			return Err(());
 		}
 
+		let mut channels_lock = self.channels.lock().unwrap();
+
+		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+		let outgoing_reputation =
+			outgoing_channel.outgoing_reputation.value_at_timestamp(added_at)?;
+		let outgoing_in_flight_risk: u64 =
+			outgoing_channel.pending_htlcs.iter().map(|htlc| htlc.1.in_flight_risk).sum();
+		let fee = incoming_amount_msat - outgoing_amount_msat;
+		let in_flight_htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
+
+		let pending_htlcs_in_congestion = outgoing_channel
+			.pending_htlcs
+			.iter()
+			.find(|(htlc_ref, pending_htlc)| {
+				htlc_ref.incoming_channel_id == incoming_channel_id
+					&& pending_htlc.bucket == BucketAssigned::Congestion
+			})
+			.is_some();
+
+		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+
 		// TODO: handle duplicate HTLCs
 
-		// NOTE: all these methods (general_available, congestion_eligible, etc) lock the
-		// channels mutex and drop it. To avoid locking and droping it between method calls, we
-		// could instead take the channels lock at the top and do macros instead of methods or
-		// have all the code doing the checks in place.
 		let (accountable, bucket_assigned) = if !incoming_accountable {
-			if self.general_available(
-				incoming_channel_id,
-				incoming_amount_msat,
-				outgoing_channel_id,
-			)? {
+			if incoming_channel.general_available(incoming_amount_msat, outgoing_channel_id)? {
 				(false, BucketAssigned::General)
-			} else if self.sufficient_reputation(
-				incoming_channel_id,
-				incoming_amount_msat,
-				incoming_cltv_expiry,
-				outgoing_channel_id,
-				outgoing_amount_msat,
-				height_added,
-			)? && self
-				.channels
-				.lock()
-				.unwrap()
-				.get(&incoming_channel_id)
-				.ok_or(())?
+			} else if incoming_channel.sufficient_reputation(
+				in_flight_htlc_risk,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				added_at,
+			)? && incoming_channel
 				.protected_bucket
 				.resources_available(incoming_amount_msat)
 			{
 				(true, BucketAssigned::Protected)
-			} else if self.congestion_eligible(
-				incoming_channel_id,
+			} else if incoming_channel.congestion_eligible(
+				pending_htlcs_in_congestion,
 				incoming_amount_msat,
 				outgoing_channel_id,
-			)? {
+				self.config.revenue_window,
+			) {
 				(true, BucketAssigned::Congestion)
 			} else {
 				return Ok(ForwardingOutcome::Fail);
 			}
 		} else {
-			if self.sufficient_reputation(
-				incoming_channel_id,
-				incoming_amount_msat,
-				incoming_cltv_expiry,
-				outgoing_channel_id,
-				outgoing_amount_msat,
-				height_added,
+			if incoming_channel.sufficient_reputation(
+				in_flight_htlc_risk,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				added_at,
 			)? {
-				let mut channels_lock = self.channels.lock().unwrap();
-				let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
 				if incoming_channel.protected_bucket.resources_available(incoming_amount_msat) {
 					(true, BucketAssigned::Protected)
 				} else if incoming_channel
-					.general_bucket
-					.can_add_htlc(outgoing_channel_id, incoming_amount_msat)?
+					.general_available(incoming_amount_msat, outgoing_channel_id)?
 				{
 					(true, BucketAssigned::General)
 				} else {
@@ -887,8 +854,6 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 			}
 		};
 
-		let mut channels_lock = self.channels.lock().unwrap();
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
 		match bucket_assigned {
 			BucketAssigned::General => {
 				incoming_channel
@@ -905,7 +870,6 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 
 		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
-		let fee = incoming_amount_msat - outgoing_amount_msat;
 		let pending_htlc = PendingHTLC {
 			incoming_channel: incoming_channel_id,
 			incoming_amount_msat,
@@ -914,7 +878,7 @@ impl<ES: EntropySource> DefaultResourceManager<ES> {
 			outgoing_accountable: accountable,
 			htlc_id,
 			added_at,
-			in_flight_risk: self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added),
+			in_flight_risk: in_flight_htlc_risk,
 			bucket: bucket_assigned,
 		};
 		outgoing_channel.pending_htlcs.insert(htlc_ref, pending_htlc);
@@ -1060,10 +1024,10 @@ struct DecayingAverage {
 }
 
 impl DecayingAverage {
-	fn new(window: Duration) -> Self {
+	fn new(start_timestamp: u64, window: Duration) -> Self {
 		DecayingAverage {
 			value: 0,
-			last_updated: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			last_updated: start_timestamp,
 			decay_rate: 0.5_f64.powf(2.0 / window.as_secs_f64()),
 		}
 	}
@@ -1120,7 +1084,10 @@ impl RevenueAverage {
 			start_timestamp,
 			window_count,
 			window_duration: window,
-			aggregated_revenue_decaying: DecayingAverage::new(window * window_count.into()),
+			aggregated_revenue_decaying: DecayingAverage::new(
+				start_timestamp,
+				window * window_count.into(),
+			),
 		}
 	}
 
@@ -1509,12 +1476,34 @@ mod tests {
 		}
 	}
 
+	fn test_congestion_eligible(
+		rm: &DefaultResourceManager<Arc<TestKeysInterface>>, incoming_htlc_amount: u64,
+	) -> bool {
+		let mut channels_lock = rm.channels.lock().unwrap();
+		let outgoing_channel = channels_lock.get_mut(&OUTGOING_SCID).unwrap();
+		let pending_htlcs_in_congestion = outgoing_channel
+			.pending_htlcs
+			.iter()
+			.find(|(htlc_ref, pending_htlc)| {
+				htlc_ref.incoming_channel_id == INCOMING_SCID
+					&& pending_htlc.bucket == BucketAssigned::Congestion
+			})
+			.is_some();
+
+		let incoming_channel = channels_lock.get_mut(&INCOMING_SCID).unwrap();
+
+		incoming_channel.congestion_eligible(
+			pending_htlcs_in_congestion,
+			incoming_htlc_amount,
+			OUTGOING_SCID,
+			rm.config.revenue_window,
+		)
+	}
+
 	#[test]
 	fn test_congestion_eligible_success() {
 		let rm = create_test_resource_manager_with_channels();
-		let is_eligible = rm.congestion_eligible(INCOMING_SCID, HTLC_AMOUNT, OUTGOING_SCID);
-		assert!(is_eligible.is_ok());
-		assert_eq!(is_eligible.unwrap(), true);
+		assert!(test_congestion_eligible(&rm, HTLC_AMOUNT + FEE_AMOUNT));
 	}
 
 	#[test]
@@ -1544,8 +1533,7 @@ mod tests {
 		for case_setup in cases {
 			let rm = create_test_resource_manager_with_channels();
 			case_setup(&rm);
-			let is_eligible = rm.congestion_eligible(INCOMING_SCID, HTLC_AMOUNT, OUTGOING_SCID);
-			assert_eq!(is_eligible.unwrap(), false);
+			assert_eq!(test_congestion_eligible(&rm, HTLC_AMOUNT + FEE_AMOUNT), false);
 		}
 	}
 
@@ -1562,23 +1550,30 @@ mod tests {
 
 		// Try to add HTLC that exceeds the slot limit
 		let htlc_amount_over_limit = slot_limit + 1000;
-		let is_eligible =
-			rm.congestion_eligible(INCOMING_SCID, htlc_amount_over_limit, OUTGOING_SCID);
-		assert!(is_eligible.is_ok());
-		assert_eq!(is_eligible.unwrap(), false);
+		assert_eq!(test_congestion_eligible(&rm, htlc_amount_over_limit), false);
 	}
 
 	fn test_sufficient_reputation(rm: &DefaultResourceManager<Arc<TestKeysInterface>>) -> bool {
-		let has_sufficient = rm.sufficient_reputation(
-			INCOMING_SCID,
-			HTLC_AMOUNT + FEE_AMOUNT,
-			CLTV_EXPIRY,
-			OUTGOING_SCID,
-			HTLC_AMOUNT,
-			CURRENT_HEIGHT,
-		);
-		assert!(has_sufficient.is_ok());
-		has_sufficient.unwrap()
+		let mut channels_lock = rm.channels.lock().unwrap();
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+		let outgoing_channel = channels_lock.get_mut(&OUTGOING_SCID).unwrap();
+		let outgoing_reputation =
+			outgoing_channel.outgoing_reputation.value_at_timestamp(now).unwrap();
+		let outgoing_in_flight_risk: u64 =
+			outgoing_channel.pending_htlcs.iter().map(|htlc| htlc.1.in_flight_risk).sum();
+		let fee = FEE_AMOUNT;
+		let in_flight_htlc_risk = rm.htlc_in_flight_risk(fee, CLTV_EXPIRY, CURRENT_HEIGHT);
+
+		let incoming_channel = channels_lock.get_mut(&INCOMING_SCID).unwrap();
+		incoming_channel
+			.sufficient_reputation(
+				in_flight_htlc_risk,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				now,
+			)
+			.unwrap()
 	}
 
 	#[test]
@@ -2030,7 +2025,7 @@ mod tests {
 
 		// Resolve 3 HTLCs that were assigned to the general bucket. It should end up with 2 in
 		// general and one in congestion.
-		let resolved_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 10;
+		let resolved_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		rm.resolve_htlc(INCOMING_SCID, htlc_ids[0], OUTGOING_SCID, true, resolved_at).unwrap();
 		rm.resolve_htlc(INCOMING_SCID, htlc_ids[2], OUTGOING_SCID, true, resolved_at).unwrap();
 		rm.resolve_htlc(INCOMING_SCID, htlc_ids[4], OUTGOING_SCID, true, resolved_at).unwrap();
