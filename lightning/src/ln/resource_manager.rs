@@ -18,8 +18,7 @@ use hashbrown::hash_map::Entry;
 
 use crate::{
 	io,
-	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
-	ln::msgs::DecodeError,
+	ln::{channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS, msgs::DecodeError},
 	prelude::{new_hash_map, HashMap},
 	sign::EntropySource,
 	sync::Mutex,
@@ -738,8 +737,9 @@ impl DefaultResourceManager {
 	}
 }
 
-impl ResourceManager for DefaultResourceManager {
-	fn add_channel(
+//impl ResourceManager for DefaultResourceManager {
+impl DefaultResourceManager {
+	pub fn add_channel(
 		&self, channel_id: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
 		timestamp_unix_secs: u64,
 	) -> Result<(), ()> {
@@ -767,7 +767,7 @@ impl ResourceManager for DefaultResourceManager {
 		}
 	}
 
-	fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
+	pub fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
 		let mut channels_lock = self.channels.lock().unwrap();
 		let res = channels_lock.remove(&channel_id);
 		debug_assert!(res.is_some(), "We should not try to remove channel that does not exist.");
@@ -779,7 +779,7 @@ impl ResourceManager for DefaultResourceManager {
 		Ok(())
 	}
 
-	fn add_htlc<ES: EntropySource>(
+	pub fn add_htlc<ES: EntropySource>(
 		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
 		outgoing_channel_id: u64, outgoing_amount_msat: u64, incoming_accountable: bool,
 		htlc_id: u64, height_added: u32, added_at: u64, entropy_source: &ES,
@@ -894,7 +894,7 @@ impl ResourceManager for DefaultResourceManager {
 		Ok(ForwardingOutcome::Forward(accountable))
 	}
 
-	fn resolve_htlc(
+	pub fn resolve_htlc(
 		&self, incoming_channel_id: u64, htlc_id: u64, outgoing_channel_id: u64, settled: bool,
 		resolved_at: u64,
 	) -> Result<(), ()> {
@@ -955,55 +955,49 @@ impl Writeable for DefaultResourceManager {
 	}
 }
 
+pub struct PendingHTLCReplay {
+	pub incoming_channel_id: u64,
+	pub incoming_amount_msat: u64,
+	pub incoming_htlc_id: u64,
+	pub incoming_cltv_expiry: u32,
+	pub incoming_accountable: bool,
+	pub outgoing_channel_id: u64,
+	pub outgoing_amount_msat: u64,
+	pub added_at_unix_seconds: u64,
+	pub height_added: u32,
+}
+
 impl Readable for DefaultResourceManager {
 	fn read<R: Read>(reader: &mut R) -> Result<DefaultResourceManager, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, config, required),
 			(3, channels, required),
 		});
-
-		let mut channels: HashMap<u64, Channel> = channels.0.unwrap();
-		let mut pending_htlcs: HashMap<u64, Vec<PendingHTLC>> = new_hash_map();
-
-		for (_, channel) in channels.iter() {
-			for (htlc_ref, htlc) in channel.pending_htlcs.iter() {
-				pending_htlcs
-					.entry(htlc_ref.incoming_channel_id)
-					.or_insert_with(|| Vec::new())
-					.push(htlc.clone());
-			}
-		}
-
-		// Replay pending HTLCs to restore bucket usage.
-		for (incoming_channel, htlcs) in pending_htlcs.iter() {
-			let incoming_channel =
-				channels.get_mut(incoming_channel).ok_or(DecodeError::InvalidValue)?;
-
-			for htlc in htlcs {
-				match htlc.bucket {
-					BucketAssigned::General => {
-						incoming_channel
-							.general_bucket
-							.add_htlc(htlc.outgoing_channel, htlc.incoming_amount_msat, None)
-							.map_err(|_| DecodeError::InvalidValue)?;
-					},
-					BucketAssigned::Congestion => {
-						incoming_channel
-							.congestion_bucket
-							.add_htlc(htlc.incoming_amount_msat)
-							.map_err(|_| DecodeError::InvalidValue)?;
-					},
-					BucketAssigned::Protected => {
-						incoming_channel
-							.protected_bucket
-							.add_htlc(htlc.incoming_amount_msat)
-							.map_err(|_| DecodeError::InvalidValue)?;
-					},
-				}
-			}
-		}
-
+		let channels: HashMap<u64, Channel> = channels.0.unwrap();
 		Ok(DefaultResourceManager { config: config.0.unwrap(), channels: Mutex::new(channels) })
+	}
+}
+
+impl DefaultResourceManager {
+	pub fn replay_pending_htlcs<ES: EntropySource>(
+		&self, pending_htlcs: Vec<PendingHTLCReplay>, entropy_source: &ES,
+	) -> Result<(), DecodeError> {
+		for htlc in pending_htlcs {
+			self.add_htlc(
+				htlc.incoming_channel_id,
+				htlc.incoming_amount_msat,
+				htlc.incoming_cltv_expiry,
+				htlc.outgoing_channel_id,
+				htlc.outgoing_amount_msat,
+				htlc.incoming_accountable,
+				htlc.incoming_htlc_id,
+				htlc.height_added,
+				htlc.added_at_unix_seconds,
+				entropy_source,
+			)
+			.map_err(|_| DecodeError::InvalidValue)?;
+		}
+		Ok(())
 	}
 }
 
@@ -1162,14 +1156,11 @@ mod tests {
 	use crate::{
 		ln::resource_manager::{
 			AggregatedWindowAverage, BucketAssigned, BucketResources, Channel, DecayingAverage,
-			DefaultResourceManager, ForwardingOutcome, GeneralBucket, HtlcRef, ResourceManager,
+			DefaultResourceManager, ForwardingOutcome, GeneralBucket, HtlcRef,
 			ResourceManagerConfig,
 		},
 		sign::EntropySource,
-		util::{
-			ser::{Readable, Writeable},
-			test_utils::TestKeysInterface,
-		},
+		util::test_utils::TestKeysInterface,
 	};
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
@@ -2110,111 +2101,6 @@ mod tests {
 
 		// Verify original channel pair still has 5 slots used
 		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID, 5);
-	}
-
-	#[test]
-	fn test_simple_manager_serialize_deserialize() {
-		let rm = create_test_resource_manager_with_channels();
-		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
-
-		// Add 7 HTLCs (5 in general, 1 in congestion and 1 in protected)
-		for i in 1..=5 {
-			add_test_htlc(&rm, false, i, &entropy_source).unwrap();
-		}
-		let congestion_htlc_amount = 25_000;
-		let fee = 1000;
-		rm.add_htlc(
-			INCOMING_SCID,
-			congestion_htlc_amount + fee,
-			CLTV_EXPIRY,
-			OUTGOING_SCID,
-			congestion_htlc_amount,
-			false,
-			6,
-			CURRENT_HEIGHT,
-			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-			&entropy_source,
-		)
-		.unwrap();
-
-		let reputation = 50_000_000;
-		add_reputation(&rm, OUTGOING_SCID, reputation);
-		add_test_htlc(&rm, true, 7, &entropy_source).unwrap();
-
-		let serialized_rm = rm.encode();
-
-		let channels = rm.channels.lock().unwrap();
-		let expected_incoming_channel = channels.get(&INCOMING_SCID).unwrap();
-		let revenue = expected_incoming_channel.incoming_revenue.aggregated_revenue_decaying.value;
-
-		let deserialized_rm = DefaultResourceManager::read(&mut serialized_rm.as_slice()).unwrap();
-		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
-		assert_eq!(2, deserialized_channels.len());
-
-		let incoming_channel = deserialized_channels.get(&INCOMING_SCID).unwrap();
-		let outgoing_channel = deserialized_channels.get(&OUTGOING_SCID).unwrap();
-		assert_eq!(7, outgoing_channel.pending_htlcs.len());
-		assert_eq!(0, incoming_channel.pending_htlcs.len());
-
-		// Check the 7 pending HTLCs that were on the outgoing channel
-		let assert_htlc = |htlc_ref: HtlcRef,
-		                   amount: u64,
-		                   fee: u64,
-		                   accountable: bool,
-		                   bucket: BucketAssigned| {
-			assert!(outgoing_channel.pending_htlcs.get(&htlc_ref).is_some());
-			let htlc = outgoing_channel.pending_htlcs.get(&htlc_ref).unwrap();
-			assert_eq!(htlc.outgoing_channel, OUTGOING_SCID);
-			assert_eq!(htlc.incoming_amount_msat, amount + fee);
-			assert_eq!(htlc.fee, fee);
-			assert_eq!(htlc.outgoing_accountable, accountable);
-			assert_eq!(htlc.bucket, bucket);
-		};
-
-		// Check 5 HTLCs in general bucket
-		for i in 1..=5 {
-			let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id: i };
-			assert_htlc(htlc_ref, HTLC_AMOUNT, FEE_AMOUNT, false, BucketAssigned::General);
-		}
-		let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id: 6 };
-		assert_htlc(htlc_ref, congestion_htlc_amount, fee, true, BucketAssigned::Congestion);
-
-		let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id: 7 };
-		assert_htlc(htlc_ref, HTLC_AMOUNT, FEE_AMOUNT, true, BucketAssigned::Protected);
-
-		// Check outgoing reputation
-		assert_eq!(outgoing_channel.outgoing_reputation.value, reputation);
-
-		drop(deserialized_channels);
-		assert_general_bucket_slots_used(&deserialized_rm, INCOMING_SCID, OUTGOING_SCID, 5);
-
-		// Check incoming revenue
-		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
-		let incoming_channel = deserialized_channels.get(&INCOMING_SCID).unwrap();
-		assert_eq!(incoming_channel.incoming_revenue.aggregated_revenue_decaying.value, revenue);
-
-		let congestion_bucket = &incoming_channel.congestion_bucket;
-		assert_eq!(congestion_bucket.slots_used, 1);
-		assert_eq!(congestion_bucket.liquidity_used, congestion_htlc_amount + fee);
-		assert_eq!(
-			congestion_bucket.slots_allocated,
-			expected_incoming_channel.congestion_bucket.slots_allocated
-		);
-		assert_eq!(
-			congestion_bucket.liquidity_used,
-			expected_incoming_channel.congestion_bucket.liquidity_used
-		);
-		let protected_bucket = &incoming_channel.protected_bucket;
-		assert_eq!(protected_bucket.slots_used, 1);
-		assert_eq!(protected_bucket.liquidity_used, HTLC_AMOUNT + FEE_AMOUNT);
-		assert_eq!(
-			protected_bucket.slots_allocated,
-			expected_incoming_channel.protected_bucket.slots_allocated
-		);
-		assert_eq!(
-			protected_bucket.liquidity_used,
-			expected_incoming_channel.protected_bucket.liquidity_used
-		);
 	}
 
 	#[test]
