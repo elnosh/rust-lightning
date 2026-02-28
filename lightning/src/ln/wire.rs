@@ -58,7 +58,7 @@ impl<T> TestEq for T {}
 #[allow(missing_docs)]
 #[derive(Debug)]
 #[cfg_attr(any(test, feature = "_test_utils"), derive(PartialEq))]
-pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
+pub enum Message<T: core::fmt::Debug + Type + TestEq> {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
 	Warning(msgs::WarningMessage),
@@ -254,7 +254,7 @@ impl<T: core::fmt::Debug + Type + TestEq> Message<T> {
 /// # Errors
 ///
 /// Returns an error if the message payload could not be decoded as the specified type.
-pub(crate) fn read<R: LengthLimitedRead, T, H: CustomMessageReader<CustomMessage = T>>(
+pub fn read<R: LengthLimitedRead, T, H: CustomMessageReader<CustomMessage = T>>(
 	buffer: &mut R, custom_reader: H,
 ) -> Result<Message<T>, (msgs::DecodeError, Option<u16>)>
 where

@@ -17,7 +17,7 @@ pub mod chan_utils;
 pub mod channel_keys;
 pub mod channel_state;
 pub mod channelmanager;
-mod features;
+pub mod features;
 pub mod funding;
 pub mod inbound_payment;
 pub mod msgs;
@@ -34,7 +34,7 @@ pub mod invoice_utils;
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
 #[cfg(not(fuzzing))]
-pub(crate) mod peer_channel_encryptor;
+pub mod peer_channel_encryptor;
 
 #[cfg(fuzzing)]
 pub mod channel;
