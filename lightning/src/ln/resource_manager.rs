@@ -244,7 +244,6 @@ impl BucketResources {
 struct PendingHTLC {
 	incoming_amount_msat: u64,
 	fee: u64,
-	outgoing_channel: u64,
 	outgoing_accountable: bool,
 	added_at_unix_seconds: u64,
 	in_flight_risk: u64,
@@ -369,11 +368,11 @@ impl Channel {
 		match self.last_congestion_misuse.entry(outgoing_scid) {
 			Entry::Vacant(_) => Ok(false),
 			Entry::Occupied(last_misuse) => {
-				// If the last misuse of the congestion bucket was over more than the
-				// revenue window, remote the entry.
 				if at_timestamp < *last_misuse.get() {
 					return Err(());
 				}
+				// If the last misuse of the congestion bucket was over more than two
+				// weeks ago, remove the entry.
 				const TWO_WEEKS: u64 = 2016 * 10 * 60;
 				let since_last_misuse = at_timestamp - last_misuse.get();
 				if since_last_misuse < TWO_WEEKS {
