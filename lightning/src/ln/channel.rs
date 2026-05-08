@@ -12093,11 +12093,13 @@ where
 		let were_node_one = node_id.as_slice() < counterparty_node_id.as_slice();
 
 		let msg = msgs::UnsignedChannelAnnouncement {
-			features: channelmanager::provided_channel_features(&user_config),
-			chain_hash,
-			short_channel_id,
-			node_id_1: if were_node_one { node_id } else { counterparty_node_id },
-			node_id_2: if were_node_one { counterparty_node_id } else { node_id },
+			common_fields: msgs::CommonChannelAnnouncementFields {
+				features: channelmanager::provided_channel_features(&user_config),
+				chain_hash,
+				short_channel_id,
+				node_id_1: if were_node_one { node_id } else { counterparty_node_id },
+				node_id_2: if were_node_one { counterparty_node_id } else { node_id },
+			},
 			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.funding.get_holder_pubkeys().funding_pubkey } else { self.funding.counterparty_funding_pubkey() }),
 			bitcoin_key_2: NodeId::from_pubkey(if were_node_one { self.funding.counterparty_funding_pubkey() } else { &self.funding.get_holder_pubkeys().funding_pubkey }),
 			excess_data: Vec::new(),
@@ -12178,7 +12180,7 @@ where
 		if let Some((their_node_sig, their_bitcoin_sig)) = self.context.announcement_sigs {
 			let our_node_key = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
-			let were_node_one = announcement.node_id_1 == our_node_key;
+			let were_node_one = announcement.common_fields.node_id_1 == our_node_key;
 
 			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
@@ -14056,9 +14058,9 @@ where
 	#[rustfmt::skip]
 	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<bool, ChannelError> {
 		let new_forwarding_info = Some(CounterpartyForwardingInfo {
-			fee_base_msat: msg.contents.fee_base_msat,
-			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
-			cltv_expiry_delta: msg.contents.cltv_expiry_delta
+			fee_base_msat: msg.contents.common_fields.fee_base_msat,
+			fee_proportional_millionths: msg.contents.common_fields.fee_proportional_millionths,
+			cltv_expiry_delta: msg.contents.common_fields.cltv_expiry_delta
 		});
 		let did_change = self.context.counterparty_forwarding_info != new_forwarding_info;
 		if did_change {
@@ -17656,16 +17658,18 @@ mod tests {
 		// Make sure that receiving a channel update will update the Channel as expected.
 		let update = ChannelUpdate {
 			contents: UnsignedChannelUpdate {
-				chain_hash,
-				short_channel_id: 0,
+				common_fields: msgs::CommonChannelUpdateFields {
+					chain_hash,
+					short_channel_id: 0,
+					cltv_expiry_delta: 100,
+					htlc_minimum_msat: 5,
+					htlc_maximum_msat: MAX_VALUE_MSAT,
+					fee_base_msat: 110,
+					fee_proportional_millionths: 11,
+				},
 				timestamp: 0,
 				message_flags: 1, // Only must_be_one
 				channel_flags: 0,
-				cltv_expiry_delta: 100,
-				htlc_minimum_msat: 5,
-				htlc_maximum_msat: MAX_VALUE_MSAT,
-				fee_base_msat: 110,
-				fee_proportional_millionths: 11,
 				excess_data: Vec::new(),
 			},
 			signature: Signature::from(unsafe { FFISignature::new() })

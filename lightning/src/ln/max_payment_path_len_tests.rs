@@ -220,7 +220,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd_1_2.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};

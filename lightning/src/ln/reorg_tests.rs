@@ -162,7 +162,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	if claim {
 		expect_payment_sent!(nodes[0], our_payment_preimage);
 	} else {
-		let scid = chan_2.0.contents.short_channel_id;
+		let scid = chan_2.0.contents.common_fields.short_channel_id;
 		expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, scid, true);
 	}
 }

@@ -1163,7 +1163,7 @@ pub fn test_accept_inbound_channel_config_override() {
 
 	// Assert that the overriden base fee surfaces in the channel update.
 	let channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_a_id);
-	assert_eq!(channel_update.contents.fee_base_msat, 555);
+	assert_eq!(channel_update.contents.common_fields.fee_base_msat, 555);
 
 	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
 }

@@ -1063,12 +1063,15 @@ fn test_public_0conf_channel() {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			assert!(announcement == *msg);
 			let update_msg = update_msg.as_ref().unwrap();
-			assert_eq!(update_msg.contents.short_channel_id, scid);
+			assert_eq!(update_msg.contents.common_fields.short_channel_id, scid);
 			assert_eq!(
-				update_msg.contents.short_channel_id,
-				announcement.contents.short_channel_id
+				update_msg.contents.common_fields.short_channel_id,
+				announcement.contents.common_fields.short_channel_id
 			);
-			assert_eq!(update_msg.contents.short_channel_id, bs_update.contents.short_channel_id);
+			assert_eq!(
+				update_msg.contents.common_fields.short_channel_id,
+				bs_update.contents.common_fields.short_channel_id
+			);
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1587,16 +1590,18 @@ fn test_unknown_channel_update_with_dont_forward_logs_debug() {
 	let msg = msgs::ChannelUpdate {
 		signature: Signature::from(unsafe { FFISignature::new() }),
 		contents: msgs::UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: unknown_scid,
+			common_fields: msgs::CommonChannelUpdateFields {
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+				short_channel_id: unknown_scid,
+				cltv_expiry_delta: 0,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
+				fee_base_msat: 0,
+				fee_proportional_millionths: 0,
+			},
 			timestamp: 0,
 			message_flags: 1 | (1 << 1), // must_be_one + dont_forward
 			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
 			excess_data: Vec::new(),
 		},
 	};

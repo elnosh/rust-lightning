@@ -838,7 +838,11 @@ mod tests {
 		let decoded_msg = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match decoded_msg {
 			Message::ChannelAnnouncement(msgs::ChannelAnnouncement {
-				contents: msgs::UnsignedChannelAnnouncement { features, .. },
+				contents:
+					msgs::UnsignedChannelAnnouncement {
+						common_fields: msgs::CommonChannelAnnouncementFields { features, .. },
+						..
+					},
 				..
 			}) => {
 				assert!(!features.requires_unknown_bits());

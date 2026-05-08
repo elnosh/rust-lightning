@@ -6,8 +6,8 @@ use bitcoin::constants::ChainHash;
 
 use lightning::io;
 use lightning::ln::msgs::{
-	DecodeError, ErrorAction, LightningError, SocketAddress, UnsignedChannelUpdate,
-	UnsignedNodeAnnouncement,
+	CommonChannelUpdateFields, DecodeError, ErrorAction, LightningError, SocketAddress,
+	UnsignedChannelUpdate, UnsignedNodeAnnouncement,
 };
 use lightning::routing::gossip::{NetworkGraph, NodeAlias, NodeId};
 use lightning::util::logger::Logger;
@@ -370,16 +370,18 @@ impl<NG: Deref<Target = NetworkGraph<L>>, L: Logger> RapidGossipSync<NG, L> {
 			let standard_channel_flags = channel_flags & 0b_0000_0011;
 
 			let mut synthetic_update = UnsignedChannelUpdate {
-				chain_hash,
-				short_channel_id,
+				common_fields: CommonChannelUpdateFields {
+					chain_hash,
+					short_channel_id,
+					cltv_expiry_delta: default_cltv_expiry_delta,
+					htlc_minimum_msat: default_htlc_minimum_msat,
+					htlc_maximum_msat: default_htlc_maximum_msat,
+					fee_base_msat: default_fee_base_msat,
+					fee_proportional_millionths: default_fee_proportional_millionths,
+				},
 				timestamp: backdated_timestamp,
 				message_flags: 1, // Only must_be_one
 				channel_flags: standard_channel_flags,
-				cltv_expiry_delta: default_cltv_expiry_delta,
-				htlc_minimum_msat: default_htlc_minimum_msat,
-				htlc_maximum_msat: default_htlc_maximum_msat,
-				fee_base_msat: default_fee_base_msat,
-				fee_proportional_millionths: default_fee_proportional_millionths,
 				excess_data: Vec::new(),
 			};
 
@@ -393,11 +395,14 @@ impl<NG: Deref<Target = NetworkGraph<L>>, L: Logger> RapidGossipSync<NG, L> {
 					.get(&short_channel_id)
 					.and_then(|channel| channel.get_directional_info(channel_flags))
 				{
-					synthetic_update.cltv_expiry_delta = directional_info.cltv_expiry_delta;
-					synthetic_update.htlc_minimum_msat = directional_info.htlc_minimum_msat;
-					synthetic_update.htlc_maximum_msat = directional_info.htlc_maximum_msat;
-					synthetic_update.fee_base_msat = directional_info.fees.base_msat;
-					synthetic_update.fee_proportional_millionths =
+					synthetic_update.common_fields.cltv_expiry_delta =
+						directional_info.cltv_expiry_delta;
+					synthetic_update.common_fields.htlc_minimum_msat =
+						directional_info.htlc_minimum_msat;
+					synthetic_update.common_fields.htlc_maximum_msat =
+						directional_info.htlc_maximum_msat;
+					synthetic_update.common_fields.fee_base_msat = directional_info.fees.base_msat;
+					synthetic_update.common_fields.fee_proportional_millionths =
 						directional_info.fees.proportional_millionths;
 				} else {
 					log_trace!(self.logger,
@@ -409,27 +414,28 @@ impl<NG: Deref<Target = NetworkGraph<L>>, L: Logger> RapidGossipSync<NG, L> {
 
 			if channel_flags & 0b_0100_0000 > 0 {
 				let cltv_expiry_delta: u16 = Readable::read(read_cursor)?;
-				synthetic_update.cltv_expiry_delta = cltv_expiry_delta;
+				synthetic_update.common_fields.cltv_expiry_delta = cltv_expiry_delta;
 			}
 
 			if channel_flags & 0b_0010_0000 > 0 {
 				let htlc_minimum_msat: u64 = Readable::read(read_cursor)?;
-				synthetic_update.htlc_minimum_msat = htlc_minimum_msat;
+				synthetic_update.common_fields.htlc_minimum_msat = htlc_minimum_msat;
 			}
 
 			if channel_flags & 0b_0001_0000 > 0 {
 				let fee_base_msat: u32 = Readable::read(read_cursor)?;
-				synthetic_update.fee_base_msat = fee_base_msat;
+				synthetic_update.common_fields.fee_base_msat = fee_base_msat;
 			}
 
 			if channel_flags & 0b_0000_1000 > 0 {
 				let fee_proportional_millionths: u32 = Readable::read(read_cursor)?;
-				synthetic_update.fee_proportional_millionths = fee_proportional_millionths;
+				synthetic_update.common_fields.fee_proportional_millionths =
+					fee_proportional_millionths;
 			}
 
 			if channel_flags & 0b_0000_0100 > 0 {
 				let htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
-				synthetic_update.htlc_maximum_msat = htlc_maximum_msat;
+				synthetic_update.common_fields.htlc_maximum_msat = htlc_maximum_msat;
 			}
 
 			if skip_update_for_unknown_channel {

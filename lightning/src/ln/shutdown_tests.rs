@@ -598,7 +598,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 			nodes[0],
 			our_payment_hash,
 			false,
-			chan_2.0.contents.short_channel_id,
+			chan_2.0.contents.common_fields.short_channel_id,
 			true
 		);
 	}
