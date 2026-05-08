@@ -13,7 +13,7 @@ use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
 use crate::routing::utxo::UtxoResult;
 use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::chan_utils::make_funding_redeemscript;
-use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
+use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, CommonChannelAnnouncementFields, CommonChannelUpdateFields, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 
@@ -40,11 +40,13 @@ pub(crate) fn channel_announcement(
 	let node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_privkey));
 
 	let unsigned_announcement = UnsignedChannelAnnouncement {
-		features,
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id,
-		node_id_1,
-		node_id_2,
+		common_fields: CommonChannelAnnouncementFields {
+			features,
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id,
+			node_id_1,
+			node_id_2,
+		},
 		bitcoin_key_1: node_id_1,
 		bitcoin_key_2: node_id_2,
 		excess_data: Vec::new(),
@@ -162,6 +164,52 @@ pub(super) fn id_to_feature_flags(id: u8) -> Vec<u8> {
 	}
 }
 
+pub(super) struct ChanUpdate {
+	pub scid: u64,
+	pub timestamp: u32,
+	pub message_flags: u8,
+	pub channel_flags: u8,
+	pub cltv_expiry_delta: u16,
+	pub htlc_minimum_msat: u64,
+	pub htlc_maximum_msat: u64,
+	pub fee_base_msat: u32,
+	pub fee_proportional_millionths: u32,
+}
+
+impl Default for ChanUpdate {
+	fn default() -> Self {
+		Self {
+			scid: 0,
+			timestamp: 0,
+			message_flags: 1,
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: MAX_VALUE_MSAT,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+		}
+	}
+}
+
+pub(super) fn make_chan_update(p: ChanUpdate) -> UnsignedChannelUpdate {
+	UnsignedChannelUpdate {
+		common_fields: CommonChannelUpdateFields {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: p.scid,
+			cltv_expiry_delta: p.cltv_expiry_delta,
+			htlc_minimum_msat: p.htlc_minimum_msat,
+			htlc_maximum_msat: p.htlc_maximum_msat,
+			fee_base_msat: p.fee_base_msat,
+			fee_proportional_millionths: p.fee_proportional_millionths,
+		},
+		timestamp: p.timestamp,
+		message_flags: p.message_flags,
+		channel_flags: p.channel_flags,
+		excess_data: Vec::new(),
+	}
+}
+
 pub(super) fn build_line_graph() -> (
 	Secp256k1<All>, sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
@@ -182,32 +230,14 @@ pub(super) fn build_line_graph() -> (
 			let cur_short_channel_id = (idx as u64) + 1;
 			add_channel(&gossip_sync, &secp_ctx, &cur_privkey, &next_privkey,
 				ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), cur_short_channel_id);
-			update_channel(&gossip_sync, &secp_ctx, &cur_privkey, UnsignedChannelUpdate {
-				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-				short_channel_id: cur_short_channel_id,
-				timestamp: idx as u32,
-				message_flags: 1, // Only must_be_one
-				channel_flags: 0,
-				cltv_expiry_delta: 0,
-				htlc_minimum_msat: 0,
-				htlc_maximum_msat: MAX_VALUE_MSAT,
-				fee_base_msat: 0,
-				fee_proportional_millionths: 0,
-				excess_data: Vec::new()
-			});
-			update_channel(&gossip_sync, &secp_ctx, &next_privkey, UnsignedChannelUpdate {
-				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-				short_channel_id: cur_short_channel_id,
-				timestamp: (idx as u32)+1,
-				message_flags: 1, // Only must_be_one
-				channel_flags: 1,
-				cltv_expiry_delta: 0,
-				htlc_minimum_msat: 0,
-				htlc_maximum_msat: MAX_VALUE_MSAT,
-				fee_base_msat: 0,
-				fee_proportional_millionths: 0,
-				excess_data: Vec::new()
-			});
+			update_channel(&gossip_sync, &secp_ctx, &cur_privkey, make_chan_update(ChanUpdate {
+				scid: cur_short_channel_id, timestamp: idx as u32,
+				..Default::default()
+			}));
+			update_channel(&gossip_sync, &secp_ctx, &next_privkey, make_chan_update(ChanUpdate {
+				scid: cur_short_channel_id, timestamp: (idx as u32) + 1, channel_flags: 1,
+				..Default::default()
+			}));
 			add_or_update_node(&gossip_sync, &secp_ctx, &next_privkey,
 				NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
 		}
@@ -314,255 +344,104 @@ fn do_build_graph(with_validation: bool) -> (
 	let (our_privkey, _, privkeys, _) = get_nodes(&secp_ctx);
 
 	add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[0], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 1,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: 0,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[0], make_chan_update(ChanUpdate {
+		scid: 1, timestamp: 1, channel_flags: 1,
+		..Default::default()
+	}));
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[0], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
-	update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 2,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (5 << 4) | 3,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: u32::max_value(),
-		fee_proportional_millionths: u32::max_value(),
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 2,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: 0,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &our_privkey, make_chan_update(ChanUpdate {
+		scid: 2, timestamp: 1,
+		cltv_expiry_delta: (5 << 4) | 3, fee_base_msat: u32::max_value(), fee_proportional_millionths: u32::max_value(),
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[1], make_chan_update(ChanUpdate {
+		scid: 2, timestamp: 1, channel_flags: 1,
+		..Default::default()
+	}));
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[1], NodeFeatures::from_le_bytes(id_to_feature_flags(2)), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[7], ChannelFeatures::from_le_bytes(id_to_feature_flags(12)), 12);
-	update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 12,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (5 << 4) | 3,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: u32::max_value(),
-		fee_proportional_millionths: u32::max_value(),
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 12,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: 0,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &our_privkey, make_chan_update(ChanUpdate {
+		scid: 12, timestamp: 1,
+		cltv_expiry_delta: (5 << 4) | 3, fee_base_msat: u32::max_value(), fee_proportional_millionths: u32::max_value(),
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[7], make_chan_update(ChanUpdate {
+		scid: 12, timestamp: 1, channel_flags: 1,
+		..Default::default()
+	}));
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[7], NodeFeatures::from_le_bytes(id_to_feature_flags(8)), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 3,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (3 << 4) | 1,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 3,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: (3 << 4) | 2,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 100,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[0], make_chan_update(ChanUpdate {
+		scid: 3, timestamp: 1, cltv_expiry_delta: (3 << 4) | 1,
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], make_chan_update(ChanUpdate {
+		scid: 3, timestamp: 1, channel_flags: 1, cltv_expiry_delta: (3 << 4) | 2, fee_base_msat: 100,
+		..Default::default()
+	}));
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[1], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 4,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (4 << 4) | 1,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 1000000,
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 4,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: (4 << 4) | 2,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[1], make_chan_update(ChanUpdate {
+		scid: 4, timestamp: 1, cltv_expiry_delta: (4 << 4) | 1, fee_proportional_millionths: 1000000,
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], make_chan_update(ChanUpdate {
+		scid: 4, timestamp: 1, channel_flags: 1, cltv_expiry_delta: (4 << 4) | 2,
+		..Default::default()
+	}));
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[7], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(13)), 13);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 13,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (13 << 4) | 1,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 2000000,
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 13,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: (13 << 4) | 2,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[7], make_chan_update(ChanUpdate {
+		scid: 13, timestamp: 1, cltv_expiry_delta: (13 << 4) | 1, fee_proportional_millionths: 2000000,
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], make_chan_update(ChanUpdate {
+		scid: 13, timestamp: 1, channel_flags: 1, cltv_expiry_delta: (13 << 4) | 2,
+		..Default::default()
+	}));
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[2], NodeFeatures::from_le_bytes(id_to_feature_flags(3)), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 6,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (6 << 4) | 1,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 6,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: (6 << 4) | 2,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new(),
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], make_chan_update(ChanUpdate {
+		scid: 6, timestamp: 1, cltv_expiry_delta: (6 << 4) | 1,
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[4], make_chan_update(ChanUpdate {
+		scid: 6, timestamp: 1, channel_flags: 1, cltv_expiry_delta: (6 << 4) | 2,
+		..Default::default()
+	}));
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(11)), 11);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 11,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (11 << 4) | 1,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 11,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: (11 << 4) | 2,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[4], make_chan_update(ChanUpdate {
+		scid: 11, timestamp: 1, cltv_expiry_delta: (11 << 4) | 1,
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[3], make_chan_update(ChanUpdate {
+		scid: 11, timestamp: 1, channel_flags: 1, cltv_expiry_delta: (11 << 4) | 2,
+		..Default::default()
+	}));
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[4], NodeFeatures::from_le_bytes(id_to_feature_flags(5)), 0);
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[3], NodeFeatures::from_le_bytes(id_to_feature_flags(4)), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[5], ChannelFeatures::from_le_bytes(id_to_feature_flags(7)), 7);
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 7,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 0,
-		cltv_expiry_delta: (7 << 4) | 1,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 1000000,
-		excess_data: Vec::new()
-	});
-	update_channel(&gossip_sync, &secp_ctx, &privkeys[5], UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: 7,
-		timestamp: 1,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: (7 << 4) | 2,
-		htlc_minimum_msat: 0,
-		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: 0,
-		fee_proportional_millionths: 0,
-		excess_data: Vec::new()
-	});
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], make_chan_update(ChanUpdate {
+		scid: 7, timestamp: 1, cltv_expiry_delta: (7 << 4) | 1, fee_proportional_millionths: 1000000,
+		..Default::default()
+	}));
+	update_channel(&gossip_sync, &secp_ctx, &privkeys[5], make_chan_update(ChanUpdate {
+		scid: 7, timestamp: 1, channel_flags: 1, cltv_expiry_delta: (7 << 4) | 2,
+		..Default::default()
+	}));
 
 	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[5], NodeFeatures::from_le_bytes(id_to_feature_flags(6)), 0);
 

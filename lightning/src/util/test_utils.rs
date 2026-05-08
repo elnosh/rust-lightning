@@ -1569,11 +1569,13 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
-		features: ChannelFeatures::empty(),
-		chain_hash: ChainHash::using_genesis_block(network),
-		short_channel_id: short_chan_id,
-		node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_privkey)),
-		node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_privkey)),
+		common_fields: msgs::CommonChannelAnnouncementFields {
+			features: ChannelFeatures::empty(),
+			chain_hash: ChainHash::using_genesis_block(network),
+			short_channel_id: short_chan_id,
+			node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_privkey)),
+			node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_privkey)),
+		},
 		bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_btckey)),
 		bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_btckey)),
 		excess_data: Vec::new(),
@@ -1596,16 +1598,18 @@ pub fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	msgs::ChannelUpdate {
 		signature: Signature::from(unsafe { FFISignature::new() }),
 		contents: msgs::UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(network),
-			short_channel_id: short_chan_id,
+			common_fields: msgs::CommonChannelUpdateFields {
+				chain_hash: ChainHash::using_genesis_block(network),
+				short_channel_id: short_chan_id,
+				cltv_expiry_delta: 0,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
+				fee_base_msat: 0,
+				fee_proportional_millionths: 0,
+			},
 			timestamp: 0,
 			message_flags: 1, // Only must_be_one
 			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
 			excess_data: vec![],
 		},
 	}

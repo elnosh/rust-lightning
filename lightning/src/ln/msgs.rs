@@ -28,8 +28,11 @@ use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::Txid;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{secp256k1, Transaction, Witness};
+
+use crate::chain::transaction::OutPoint;
 
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPaymentTlvs, DummyTlvs, ForwardTlvs, ReceiveTlvs};
@@ -1419,10 +1422,11 @@ pub struct UnsignedNodeAnnouncement {
 	/// This is stored to ensure forward-compatibility as new fields are added to the lightning gossip protocol.
 	pub excess_data: Vec<u8>,
 }
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+
 /// A [`node_announcement`] message to be sent to or received from a peer.
 ///
 /// [`node_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-node_announcement-message
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NodeAnnouncement {
 	/// The signature by the node key
 	pub signature: Signature,
@@ -1430,11 +1434,57 @@ pub struct NodeAnnouncement {
 	pub contents: UnsignedNodeAnnouncement,
 }
 
-/// The unsigned part of a [`channel_announcement`] message.
+/// The unsigned part of a [`node_announcement_2`] message.
+///
+/// [`node_announcement_2`]: https://github.com/lightning/bolts/pull/1059
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct UnsignedNodeAnnouncementV2 {
+	/// The advertised features
+	pub features: NodeFeatures,
+	/// The block height at which this announcement was produced
+	pub block_height: u32,
+	/// The `node_id` this announcement originated from
+	pub node_id: NodeId,
+	/// An RGB color for UI purposes
+	pub rgb: Option<[u8; 3]>,
+	/// A variable-length alias of at most 32 bytes, for UI purposes.
+	///
+	/// This should be sanitized before use. There is no guarantee of uniqueness.
+	pub alias: Option<Vec<u8>>,
+	/// IPv4 socket addresses. Each entry is `(addr, port)`.
+	pub ipv4_addresses: Vec<([u8; 4], u16)>,
+	/// IPv6 socket addresses.
+	pub ipv6_addresses: Vec<([u8; 16], u16)>,
+	/// Tor v3 onion addresses. Each entry packs the 32-byte ed25519 public key,
+	/// a 2-byte checksum, and a 1-byte version into 35 raw wire bytes, paired
+	/// with the port.
+	pub tor_v3_addresses: Vec<([u8; 35], u16)>,
+	/// DNS hostnames. Each entry is `(hostname, port)`.
+	pub dns_hostnames: Vec<(Hostname, u16)>,
+	/// Unknown odd TLVs observed in the signed range (0..=159), kept in
+	/// type-ascending order so the message can be re-emitted byte-identically
+	/// after a roundtrip and forward-compatible fields are preserved across
+	/// re-broadcast.
+	pub excess_tlvs: Vec<(u64, Vec<u8>)>,
+}
+
+/// A [`node_announcement_2`] message to be sent to or received from a peer.
+///
+/// [`node_announcement_2`]: https://github.com/lightning/bolts/pull/1059
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct NodeAnnouncementV2 {
+	/// The BIP-340 signature over the BIP-340 tagged hash of the unsigned content.
+	pub signature: schnorr::Signature,
+	/// The actual content of the announcement.
+	pub contents: UnsignedNodeAnnouncementV2,
+}
+
+/// Contains fields that are both common to [`channel_announcement`] and [`channel_announcement_2`] messages.
 ///
 /// [`channel_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
+/// [`channel_announcement_2`]: https://github.com/lightning/bolts/pull/1059
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct UnsignedChannelAnnouncement {
+pub struct CommonChannelAnnouncementFields {
 	/// The advertised channel features
 	pub features: ChannelFeatures,
 	/// The genesis hash of the blockchain where the channel is to be opened
@@ -1445,6 +1495,15 @@ pub struct UnsignedChannelAnnouncement {
 	pub node_id_1: NodeId,
 	/// The other of the two `node_id`s which are endpoints of this channel
 	pub node_id_2: NodeId,
+}
+
+/// The unsigned part of a [`channel_announcement`] message.
+///
+/// [`channel_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct UnsignedChannelAnnouncement {
+	/// Common fields of `channel_announcement`-like messages
+	pub common_fields: CommonChannelAnnouncementFields,
 	/// The funding key for the first node
 	pub bitcoin_key_1: NodeId,
 	/// The funding key for the second node
@@ -1472,22 +1531,51 @@ pub struct ChannelAnnouncement {
 	pub contents: UnsignedChannelAnnouncement,
 }
 
-/// The unsigned part of a [`channel_update`] message.
+/// The unsigned part of a [`channel_announcement_2`] message.
+///
+/// [`channel_announcement_2`]: https://github.com/lightning/bolts/pull/1059
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct UnsignedChannelAnnouncementV2 {
+	/// Common fields of `channel_announcement`-like messages
+	pub common_fields: CommonChannelAnnouncementFields,
+	/// The advertised channel capacity, in satoshis
+	pub capacity_sats: u64,
+	/// The on-chain outpoint funding this channel
+	pub outpoint: OutPoint,
+	/// The funding key for the first node
+	pub bitcoin_key_1: Option<NodeId>,
+	/// The funding key for the second node
+	pub bitcoin_key_2: Option<NodeId>,
+	/// Merkle root hash when deriving the tweak to apply to the internal key in the case of a P2TR channel.
+	pub merkle_root_hash: Option<[u8; 32]>,
+	/// Unknown odd TLVs observed in the signed range (0..=159), kept in
+	/// type-ascending order so the message can be re-emitted byte-identically
+	/// after a roundtrip and forward-compatible fields are preserved across
+	/// re-broadcast.
+	pub excess_tlvs: Vec<(u64, Vec<u8>)>,
+}
+
+/// A [`channel_announcement_2`] message to be sent to or received from a peer.
+///
+/// [`channel_announcement_2`]: https://github.com/lightning/bolts/pull/1059
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ChannelAnnouncementV2 {
+	/// The BIP-340 signature over the MuSig2-aggregated key.
+	pub signature: schnorr::Signature,
+	/// The actual announcement content.
+	pub contents: UnsignedChannelAnnouncementV2,
+}
+
+/// Contains fields that are both common to [`channel_update`] and [`channel_update_2`] messages.
 ///
 /// [`channel_update`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
+/// [`channel_update_2`]: https://github.com/lightning/bolts/pull/1059
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct UnsignedChannelUpdate {
+pub struct CommonChannelUpdateFields {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: ChainHash,
 	/// The short channel ID
 	pub short_channel_id: u64,
-	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
-	pub timestamp: u32,
-	/// Flags pertaining to this message.
-	pub message_flags: u8,
-	/// Flags pertaining to the channel, including to which direction in the channel this update
-	/// applies and whether the direction is currently able to forward HTLCs.
-	pub channel_flags: u8,
 	/// The number of blocks such that if:
 	/// `incoming_htlc.cltv_expiry < outgoing_htlc.cltv_expiry + cltv_expiry_delta`
 	/// then we need to fail the HTLC backwards. When forwarding an HTLC, `cltv_expiry_delta` determines
@@ -1499,14 +1587,28 @@ pub struct UnsignedChannelUpdate {
 	pub cltv_expiry_delta: u16,
 	/// The minimum HTLC size incoming to sender, in milli-satoshi
 	pub htlc_minimum_msat: u64,
-	/// The maximum HTLC value incoming to sender, in milli-satoshi.
-	///
-	/// This used to be optional.
+	/// The maximum HTLC value incoming to sender, in milli-satoshi
 	pub htlc_maximum_msat: u64,
 	/// The base HTLC fee charged by sender, in milli-satoshi
 	pub fee_base_msat: u32,
 	/// The amount to fee multiplier, in micro-satoshi
 	pub fee_proportional_millionths: u32,
+}
+
+/// The unsigned part of a [`channel_update`] message.
+///
+/// [`channel_update`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct UnsignedChannelUpdate {
+	/// Common fields of `channel_update`-like messages
+	pub common_fields: CommonChannelUpdateFields,
+	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
+	pub timestamp: u32,
+	/// Flags pertaining to this message.
+	pub message_flags: u8,
+	/// Flags pertaining to the channel, including to which direction in the channel this update
+	/// applies and whether the direction is currently able to forward HTLCs.
+	pub channel_flags: u8,
 	/// Excess data which was signed as a part of the message which we do not (yet) understand how
 	/// to decode.
 	///
@@ -1522,6 +1624,37 @@ pub struct ChannelUpdate {
 	pub signature: Signature,
 	/// The actual channel update
 	pub contents: UnsignedChannelUpdate,
+}
+
+/// The unsigned part of a [`channel_update_2`] message.
+///
+/// [`channel_update_2`]: https://github.com/lightning/bolts/pull/1059
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct UnsignedChannelUpdateV2 {
+	/// Common fields of `channel_update`-like messages
+	pub common_fields: CommonChannelUpdateFields,
+	/// The block height at which this update was produced
+	pub block_height: u32,
+	/// Bitmap of disable flags
+	pub disable_flags: u8,
+	/// Whether this update is from the `node_id_2` direction
+	pub second_peer: bool,
+	/// Unknown odd TLVs observed in the signed range (0..=159), kept in
+	/// type-ascending order so the message can be re-emitted byte-identically
+	/// after a roundtrip and forward-compatible fields are preserved across
+	/// re-broadcast.
+	pub excess_tlvs: Vec<(u64, Vec<u8>)>,
+}
+
+/// A [`channel_update_2`] message to be sent to or received from a peer.
+///
+/// [`channel_update_2`]: https://github.com/lightning/bolts/pull/1059
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ChannelUpdateV2 {
+	/// The BIP-340 signature over the BIP-340 tagged hash of the unsigned content.
+	pub signature: schnorr::Signature,
+	/// The actual update content.
+	pub contents: UnsignedChannelUpdateV2,
 }
 
 /// A [`query_channel_range`] message is used to query a peer for channel
@@ -4159,11 +4292,11 @@ impl LengthReadable for Pong {
 
 impl Writeable for UnsignedChannelAnnouncement {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.features.write(w)?;
-		self.chain_hash.write(w)?;
-		self.short_channel_id.write(w)?;
-		self.node_id_1.write(w)?;
-		self.node_id_2.write(w)?;
+		self.common_fields.features.write(w)?;
+		self.common_fields.chain_hash.write(w)?;
+		self.common_fields.short_channel_id.write(w)?;
+		self.common_fields.node_id_1.write(w)?;
+		self.common_fields.node_id_2.write(w)?;
 		self.bitcoin_key_1.write(w)?;
 		self.bitcoin_key_2.write(w)?;
 		w.write_all(&self.excess_data[..])?;
@@ -4174,11 +4307,13 @@ impl Writeable for UnsignedChannelAnnouncement {
 impl LengthReadable for UnsignedChannelAnnouncement {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
-			features: Readable::read(r)?,
-			chain_hash: Readable::read(r)?,
-			short_channel_id: Readable::read(r)?,
-			node_id_1: Readable::read(r)?,
-			node_id_2: Readable::read(r)?,
+			common_fields: CommonChannelAnnouncementFields {
+				features: Readable::read(r)?,
+				chain_hash: Readable::read(r)?,
+				short_channel_id: Readable::read(r)?,
+				node_id_1: Readable::read(r)?,
+				node_id_2: Readable::read(r)?,
+			},
 			bitcoin_key_1: Readable::read(r)?,
 			bitcoin_key_2: Readable::read(r)?,
 			excess_data: read_to_end(r)?,
@@ -4211,18 +4346,18 @@ impl LengthReadable for ChannelAnnouncement {
 
 impl Writeable for UnsignedChannelUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.chain_hash.write(w)?;
-		self.short_channel_id.write(w)?;
+		self.common_fields.chain_hash.write(w)?;
+		self.common_fields.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
 		// The low bit of message_flags used to indicate the presence of `htlc_maximum_msat`, and
 		// now must be set
 		(self.message_flags | 1).write(w)?;
 		self.channel_flags.write(w)?;
-		self.cltv_expiry_delta.write(w)?;
-		self.htlc_minimum_msat.write(w)?;
-		self.fee_base_msat.write(w)?;
-		self.fee_proportional_millionths.write(w)?;
-		self.htlc_maximum_msat.write(w)?;
+		self.common_fields.cltv_expiry_delta.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.fee_base_msat.write(w)?;
+		self.common_fields.fee_proportional_millionths.write(w)?;
+		self.common_fields.htlc_maximum_msat.write(w)?;
 		w.write_all(&self.excess_data[..])?;
 		Ok(())
 	}
@@ -4230,26 +4365,39 @@ impl Writeable for UnsignedChannelUpdate {
 
 impl LengthReadable for UnsignedChannelUpdate {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
-		let res = Self {
-			chain_hash: Readable::read(r)?,
-			short_channel_id: Readable::read(r)?,
-			timestamp: Readable::read(r)?,
-			message_flags: Readable::read(r)?,
-			channel_flags: Readable::read(r)?,
-			cltv_expiry_delta: Readable::read(r)?,
-			htlc_minimum_msat: Readable::read(r)?,
-			fee_base_msat: Readable::read(r)?,
-			fee_proportional_millionths: Readable::read(r)?,
-			htlc_maximum_msat: Readable::read(r)?,
-			excess_data: read_to_end(r)?,
-		};
-		if res.message_flags & 1 != 1 {
+		let chain_hash: ChainHash = Readable::read(r)?;
+		let short_channel_id: u64 = Readable::read(r)?;
+		let timestamp: u32 = Readable::read(r)?;
+		let message_flags: u8 = Readable::read(r)?;
+		let channel_flags: u8 = Readable::read(r)?;
+		let cltv_expiry_delta: u16 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let fee_base_msat: u32 = Readable::read(r)?;
+		let fee_proportional_millionths: u32 = Readable::read(r)?;
+		let htlc_maximum_msat: u64 = Readable::read(r)?;
+		let excess_data: Vec<u8> = read_to_end(r)?;
+
+		if message_flags & 1 != 1 {
 			// The `must_be_one` flag should be set (historically it indicated the presence of the
 			// `htlc_maximum_msat` field, which is now required).
-			Err(DecodeError::InvalidValue)
-		} else {
-			Ok(res)
+			return Err(DecodeError::InvalidValue);
 		}
+
+		Ok(Self {
+			common_fields: CommonChannelUpdateFields {
+				chain_hash,
+				short_channel_id,
+				cltv_expiry_delta,
+				htlc_minimum_msat,
+				htlc_maximum_msat,
+				fee_base_msat,
+				fee_proportional_millionths,
+			},
+			timestamp,
+			message_flags,
+			channel_flags,
+			excess_data,
+		})
 	}
 }
 
@@ -4844,11 +4992,13 @@ mod tests {
 			features = ChannelFeatures::from_le_bytes(vec![0xFF, 0xFF]);
 		}
 		let unsigned_channel_announcement = msgs::UnsignedChannelAnnouncement {
-			features,
-			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
-			short_channel_id: 2316138423780173,
-			node_id_1: NodeId::from_pubkey(&pubkey_1),
-			node_id_2: NodeId::from_pubkey(&pubkey_2),
+			common_fields: msgs::CommonChannelAnnouncementFields {
+				features,
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
+				short_channel_id: 2316138423780173,
+				node_id_1: NodeId::from_pubkey(&pubkey_1),
+				node_id_2: NodeId::from_pubkey(&pubkey_2),
+			},
 			bitcoin_key_1: NodeId::from_pubkey(&pubkey_3),
 			bitcoin_key_2: NodeId::from_pubkey(&pubkey_4),
 			excess_data: if excess_data {
@@ -5041,16 +5191,18 @@ mod tests {
 		let sig_1 =
 			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let unsigned_channel_update = msgs::UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
-			short_channel_id: 2316138423780173,
+			common_fields: msgs::CommonChannelUpdateFields {
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
+				short_channel_id: 2316138423780173,
+				cltv_expiry_delta: 144,
+				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: 131355275467161,
+				fee_base_msat: 10000,
+				fee_proportional_millionths: 20,
+			},
 			timestamp: 20190119,
 			message_flags: 1, // Only must_be_one
 			channel_flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
-			cltv_expiry_delta: 144,
-			htlc_minimum_msat: 1000000,
-			htlc_maximum_msat: 131355275467161,
-			fee_base_msat: 10000,
-			fee_proportional_millionths: 20,
 			excess_data: if excess_data { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() },
 		};
 		let channel_update =

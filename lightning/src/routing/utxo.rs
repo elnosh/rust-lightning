@@ -91,8 +91,8 @@ enum ChannelAnnouncement {
 impl ChannelAnnouncement {
 	fn node_id_1(&self) -> &NodeId {
 		match self {
-			ChannelAnnouncement::Full(msg) => &msg.contents.node_id_1,
-			ChannelAnnouncement::Unsigned(msg) => &msg.node_id_1,
+			ChannelAnnouncement::Full(msg) => &msg.contents.common_fields.node_id_1,
+			ChannelAnnouncement::Unsigned(msg) => &msg.common_fields.node_id_1,
 		}
 	}
 }
@@ -204,7 +204,9 @@ impl PendingChecks {
 		&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>,
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
-		if let hash_map::Entry::Occupied(e) = pending_checks.channels.entry(msg.short_channel_id) {
+		if let hash_map::Entry::Occupied(e) =
+			pending_checks.channels.entry(msg.common_fields.short_channel_id)
+		{
 			let is_from_a = (msg.channel_flags & 1) == 1;
 			match Weak::upgrade(e.get()) {
 				Some(msgs_ref) => {
@@ -298,7 +300,7 @@ impl PendingChecks {
 		replacement: Option<Weak<Mutex<UtxoMessages>>>,
 		pending_channels: &mut HashMap<u64, Weak<Mutex<UtxoMessages>>>,
 	) -> Result<(), msgs::LightningError> {
-		match pending_channels.entry(msg.short_channel_id) {
+		match pending_channels.entry(msg.common_fields.short_channel_id) {
 			hash_map::Entry::Occupied(mut e) => {
 				// There's already a pending lookup for the given SCID. Check if the messages
 				// are the same and, if so, return immediately (don't bother spawning another
@@ -391,7 +393,7 @@ impl PendingChecks {
 			Err(UtxoLookupError::UnknownChain) => Err(LightningError {
 				err: format!(
 					"Channel announced on an unknown chain ({})",
-					msg.chain_hash.to_bytes().as_hex()
+					msg.common_fields.chain_hash.to_bytes().as_hex()
 				),
 				action: ErrorAction::IgnoreError,
 			}),
@@ -415,7 +417,11 @@ impl PendingChecks {
 			},
 			&Some(ref utxo_lookup) => {
 				let notifier = Arc::clone(&self.completion_notifier);
-				match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id, notifier) {
+				match utxo_lookup.get_utxo(
+					&msg.common_fields.chain_hash,
+					msg.common_fields.short_channel_id,
+					notifier,
+				) {
 					UtxoResult::Sync(res) => handle_result(res),
 					UtxoResult::Async(future) => {
 						let mut pending_checks = self.internal.lock().unwrap();
@@ -452,12 +458,12 @@ impl PendingChecks {
 							});
 							pending_checks
 								.nodes
-								.entry(msg.node_id_1)
+								.entry(msg.common_fields.node_id_1)
 								.or_default()
 								.push(Arc::downgrade(&future.state));
 							pending_checks
 								.nodes
-								.entry(msg.node_id_2)
+								.entry(msg.common_fields.node_id_2)
 								.or_default()
 								.push(Arc::downgrade(&future.state));
 							Err(LightningError {
@@ -536,10 +542,13 @@ impl PendingChecks {
 		// with them.
 		let resolver = UtxoResolver(result);
 		let (node_id_1, node_id_2) = match &announcement {
-			ChannelAnnouncement::Full(signed_msg) => {
-				(signed_msg.contents.node_id_1, signed_msg.contents.node_id_2)
+			ChannelAnnouncement::Full(signed_msg) => (
+				signed_msg.contents.common_fields.node_id_1,
+				signed_msg.contents.common_fields.node_id_2,
+			),
+			ChannelAnnouncement::Unsigned(msg) => {
+				(msg.common_fields.node_id_1, msg.common_fields.node_id_2)
 			},
-			ChannelAnnouncement::Unsigned(msg) => (msg.node_id_1, msg.node_id_2),
 		};
 		match announcement {
 			ChannelAnnouncement::Full(signed_msg) => {
@@ -717,7 +726,7 @@ mod tests {
 		// Check that async lookups which resolve quicker than the future is returned to the
 		// `get_utxo` call can read it still resolve properly.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -745,8 +754,8 @@ mod tests {
 			node_b_announce,
 			..,
 		) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
-		let node_id_1 = valid_announcement.contents.node_id_1;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
+		let node_id_1 = valid_announcement.contents.common_fields.node_id_1;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -785,7 +794,7 @@ mod tests {
 	fn test_invalid_async_lookup() {
 		// Test an async lookup which returns an incorrect script
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -811,7 +820,7 @@ mod tests {
 	fn test_failing_async_lookup() {
 		// Test an async lookup which returns an error
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -847,7 +856,7 @@ mod tests {
 			chan_update_b,
 			..,
 		) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -892,14 +901,14 @@ mod tests {
 		assert!(network_graph
 			.read_only()
 			.nodes()
-			.get(&valid_announcement.contents.node_id_1)
+			.get(&valid_announcement.contents.common_fields.node_id_1)
 			.unwrap()
 			.announcement_info
 			.is_some());
 		assert!(network_graph
 			.read_only()
 			.nodes()
-			.get(&valid_announcement.contents.node_id_2)
+			.get(&valid_announcement.contents.common_fields.node_id_2)
 			.unwrap()
 			.announcement_info
 			.is_some());
@@ -921,7 +930,7 @@ mod tests {
 			chan_update_c,
 			..,
 		) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -971,7 +980,7 @@ mod tests {
 		// Test that a pending async lookup will prevent a second async lookup from flying, but
 		// only if the channel_announcement message is identical.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 
 		let notifier_a = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier_a));
@@ -1024,7 +1033,7 @@ mod tests {
 		#[rustfmt::skip]
 		let is_test_feature_set =
 			network_graph.read_only().channels().get(&scid).unwrap().announcement_message
-			.as_ref().unwrap().contents.features.supports_unknown_test_feature();
+			.as_ref().unwrap().contents.common_fields.features.supports_unknown_test_feature();
 		assert!(!is_test_feature_set);
 	}
 
@@ -1045,7 +1054,7 @@ mod tests {
 
 		for i in 0..PendingChecks::MAX_PENDING_LOOKUPS {
 			let valid_announcement = get_signed_channel_announcement(
-				|msg| msg.short_channel_id += 1 + i as u64,
+				|msg| msg.common_fields.short_channel_id += 1 + i as u64,
 				node_1_privkey,
 				node_2_privkey,
 				&secp_ctx,
@@ -1086,7 +1095,7 @@ mod tests {
 
 		for i in 0..PendingChecks::MAX_PENDING_LOOKUPS {
 			let valid_announcement = get_signed_channel_announcement(
-				|msg| msg.short_channel_id += 1 + i as u64,
+				|msg| msg.common_fields.short_channel_id += 1 + i as u64,
 				node_1_privkey,
 				node_2_privkey,
 				&secp_ctx,

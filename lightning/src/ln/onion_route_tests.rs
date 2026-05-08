@@ -343,16 +343,18 @@ impl msgs::ChannelUpdate {
 		msgs::ChannelUpdate {
 			signature: Signature::from(unsafe { FFISignature::new() }),
 			contents: msgs::UnsignedChannelUpdate {
-				chain_hash: ChainHash::from(BlockHash::hash(&vec![0u8][..]).as_ref()),
-				short_channel_id,
+				common_fields: msgs::CommonChannelUpdateFields {
+					chain_hash: ChainHash::from(BlockHash::hash(&vec![0u8][..]).as_ref()),
+					short_channel_id,
+					cltv_expiry_delta: 0,
+					htlc_minimum_msat: 0,
+					htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
+					fee_base_msat: 0,
+					fee_proportional_millionths: 0,
+				},
 				timestamp: 0,
 				message_flags: 1, // Only must_be_one
 				channel_flags: 0,
-				cltv_expiry_delta: 0,
-				htlc_minimum_msat: 0,
-				htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
-				fee_base_msat: 0,
-				fee_proportional_millionths: 0,
 				excess_data: vec![],
 			},
 		}
@@ -420,7 +422,7 @@ fn test_fee_failures() {
 	// malleated the payment before forwarding, taking funds when they shouldn't have. However,
 	// because we ignore channel update contents, we will still blame the 2nd channel.
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"fee_insufficient",
 		100,
@@ -511,7 +513,7 @@ fn test_onion_failure() {
 	};
 
 	// intermediate node failure
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"invalid_realm",
 		0,
@@ -553,7 +555,7 @@ fn test_onion_failure() {
 	);
 
 	// final node failure
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"invalid_realm",
 		3,
@@ -816,7 +818,7 @@ fn test_onion_failure() {
 
 	// Our immediate peer sent UpdateFailMalformedHTLC because it couldn't understand the onion in
 	// the UpdateAddHTLC that we sent.
-	let short_channel_id = channels[0].0.contents.short_channel_id;
+	let short_channel_id = channels[0].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"invalid_onion_version",
 		0,
@@ -871,7 +873,7 @@ fn test_onion_failure() {
 		Some(HTLCHandlingFailureType::InvalidOnion),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	let chan_update = ChannelUpdate::dummy(short_channel_id);
 
 	let mut err_data = Vec::new();
@@ -942,7 +944,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test_with_fail_intercept(
 		"permanent_channel_failure",
 		100,
@@ -975,7 +977,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test_with_fail_intercept(
 		"required_channel_feature_missing",
 		100,
@@ -1027,7 +1029,7 @@ fn test_onion_failure() {
 		Some(HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_channel_id }),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	let amt_to_forward = {
 		let (per_peer_state, mut peer_state);
 		let chan = get_channel_ref!(nodes[1], nodes[2], per_peer_state, peer_state, channels[1].2);
@@ -1065,7 +1067,7 @@ fn test_onion_failure() {
 
 	// We ignore channel update contents in onion errors, so will blame the 2nd channel even though
 	// the first node is the one that messed up.
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"fee_insufficient",
 		100,
@@ -1084,7 +1086,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"incorrect_cltv_expiry",
 		100,
@@ -1104,7 +1106,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"expiry_too_soon",
 		100,
@@ -1191,7 +1193,7 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry),
 		None,
-		Some(channels[1].0.contents.short_channel_id),
+		Some(channels[1].0.contents.common_fields.short_channel_id),
 		Some(HTLCHandlingFailureType::Receive { payment_hash }),
 	);
 
@@ -1221,11 +1223,11 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::FinalIncorrectHTLCAmount),
 		None,
-		Some(channels[1].0.contents.short_channel_id),
+		Some(channels[1].0.contents.common_fields.short_channel_id),
 		Some(HTLCHandlingFailureType::Receive { payment_hash }),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = channels[1].0.contents.common_fields.short_channel_id;
 	run_onion_failure_test(
 		"channel_disabled",
 		100,
@@ -1387,7 +1389,7 @@ fn test_onion_failure() {
 			node_id: route.paths[0].hops[1].pubkey,
 			is_permanent: true,
 		}),
-		Some(channels[1].0.contents.short_channel_id),
+		Some(channels[1].0.contents.common_fields.short_channel_id),
 		None,
 	);
 
@@ -1456,10 +1458,10 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::TemporaryChannelFailure),
 		Some(NetworkUpdate::ChannelFailure {
-			short_channel_id: channels[1].0.contents.short_channel_id,
+			short_channel_id: channels[1].0.contents.common_fields.short_channel_id,
 			is_permanent: false,
 		}),
-		Some(channels[1].0.contents.short_channel_id),
+		Some(channels[1].0.contents.common_fields.short_channel_id),
 		Some(next_hop_failure.clone()),
 	);
 	run_onion_failure_test_with_fail_intercept(
@@ -1506,10 +1508,10 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::TemporaryChannelFailure),
 		Some(NetworkUpdate::ChannelFailure {
-			short_channel_id: channels[1].0.contents.short_channel_id,
+			short_channel_id: channels[1].0.contents.common_fields.short_channel_id,
 			is_permanent: false,
 		}),
-		Some(channels[1].0.contents.short_channel_id),
+		Some(channels[1].0.contents.common_fields.short_channel_id),
 		None,
 	);
 	run_onion_failure_test(
@@ -1599,7 +1601,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	let other_channel = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let channel_to_update = if announce_for_forwarding {
 		let channel = create_announced_chan_between_nodes(&nodes, 1, 2);
-		(channel.2, channel.0.contents.short_channel_id)
+		(channel.2, channel.0.contents.common_fields.short_channel_id)
 	} else {
 		let channel = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 10001);
 		(channel.0.channel_id, channel.0.short_channel_id_alias.unwrap())
@@ -2372,12 +2374,16 @@ macro_rules! get_phantom_route {
 			.with_route_hints(vec![RouteHint(vec![
 				RouteHintHop {
 					src_node_id: $nodes[0].node.get_our_node_id(),
-					short_channel_id: $channel.0.contents.short_channel_id,
+					short_channel_id: $channel.0.contents.common_fields.short_channel_id,
 					fees: RoutingFees {
-						base_msat: $channel.0.contents.fee_base_msat,
-						proportional_millionths: $channel.0.contents.fee_proportional_millionths,
+						base_msat: $channel.0.contents.common_fields.fee_base_msat,
+						proportional_millionths: $channel
+							.0
+							.contents
+							.common_fields
+							.fee_proportional_millionths,
 					},
-					cltv_expiry_delta: $channel.0.contents.cltv_expiry_delta,
+					cltv_expiry_delta: $channel.0.contents.common_fields.cltv_expiry_delta,
 					htlc_minimum_msat: None,
 					htlc_maximum_msat: None,
 				},

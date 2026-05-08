@@ -78,10 +78,14 @@ fn mpp_failure() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
+	let chan_1_id =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+	let chan_2_id =
+		create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
+	let chan_3_id =
+		create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.common_fields.short_channel_id;
+	let chan_4_id =
+		create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.common_fields.short_channel_id;
 
 	let (mut route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
@@ -130,11 +134,11 @@ fn mpp_retry() {
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0].hops[0].pubkey = node_b_id;
-	route.paths[0].hops[0].short_channel_id = chan_1_update.contents.short_channel_id;
-	route.paths[0].hops[1].short_channel_id = chan_3_update.contents.short_channel_id;
+	route.paths[0].hops[0].short_channel_id = chan_1_update.contents.common_fields.short_channel_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_update.contents.common_fields.short_channel_id;
 	route.paths[1].hops[0].pubkey = node_c_id;
-	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.short_channel_id;
-	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
+	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.common_fields.short_channel_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.common_fields.short_channel_id;
 	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 	// Initiate the MPP payment.
@@ -184,7 +188,7 @@ fn mpp_retry() {
 	// Retry the second half of the payment and make sure it succeeds.
 	route.paths.remove(0);
 	route_params.final_value_msat = 1_000_000;
-	let chan_4_scid = chan_4_update.contents.short_channel_id;
+	let chan_4_scid = chan_4_update.contents.common_fields.short_channel_id;
 	route_params.payment_params.previously_failed_channels.push(chan_4_scid);
 	// Check the remaining max total routing fee for the second attempt is 50_000 - 1_000 msat fee
 	// used by the first path
@@ -248,12 +252,14 @@ fn mpp_retry_overpay() {
 		get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, amt_msat, max_fee);
 
 	// Check we overpay on the second path which we're about to fail.
-	assert_eq!(chan_1_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_1 = route.paths[0].fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
+	assert_eq!(chan_1_update.contents.common_fields.fee_proportional_millionths, 0);
+	let overpaid_amount_1 =
+		route.paths[0].fee_msat() as u32 - chan_1_update.contents.common_fields.fee_base_msat;
 	assert_eq!(overpaid_amount_1, 0);
 
-	assert_eq!(chan_2_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_2 = route.paths[1].fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
+	assert_eq!(chan_2_update.contents.common_fields.fee_proportional_millionths, 0);
+	let overpaid_amount_2 =
+		route.paths[1].fee_msat() as u32 - chan_2_update.contents.common_fields.fee_base_msat;
 
 	let total_overpaid_amount = overpaid_amount_1 + overpaid_amount_2;
 
@@ -307,7 +313,7 @@ fn mpp_retry_overpay() {
 
 	route.paths.remove(0);
 	route_params.final_value_msat -= first_path_value;
-	let chan_4_scid = chan_4_update.contents.short_channel_id;
+	let chan_4_scid = chan_4_update.contents.common_fields.short_channel_id;
 	route_params.payment_params.previously_failed_channels.push(chan_4_scid);
 	// Check the remaining max total routing fee for the second attempt accounts only for 1_000 msat
 	// base fee, but not for overpaid value of the first try.
@@ -360,11 +366,11 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool, keysend: bool) {
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0].hops[0].pubkey = node_b_id;
-	route.paths[0].hops[0].short_channel_id = chan_1_update.contents.short_channel_id;
-	route.paths[0].hops[1].short_channel_id = chan_3_update.contents.short_channel_id;
+	route.paths[0].hops[0].short_channel_id = chan_1_update.contents.common_fields.short_channel_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_update.contents.common_fields.short_channel_id;
 	route.paths[1].hops[0].pubkey = node_c_id;
-	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.short_channel_id;
-	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
+	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.common_fields.short_channel_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.common_fields.short_channel_id;
 	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 	// Initiate the MPP payment.
@@ -644,11 +650,14 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let node_c_id = nodes[2].node.get_our_node_id();
 	let node_d_id = nodes[3].node.get_our_node_id();
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
+	let chan_1_id =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+	let chan_2_id =
+		create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
+	let chan_3_id =
+		create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.common_fields.short_channel_id;
 	let (update_a, _, chan_4_chan_id, _) = create_announced_chan_between_nodes(&nodes, 2, 3);
-	let chan_4_id = update_a.contents.short_channel_id;
+	let chan_4_id = update_a.contents.common_fields.short_channel_id;
 	let amount = 40_000;
 	let (mut route, payment_hash, payment_preimage, _) =
 		get_route_and_payment_hash!(nodes[0], nodes[3], amount);
@@ -2928,13 +2937,14 @@ fn auto_retry_partial_failure() {
 
 	// Open three channels, the first has plenty of liquidity, the second and third have ~no
 	// available liquidity, causing any outbound payments routed over it to fail immediately.
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_1_id =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
 	let chan_2 =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 989_000_000);
-	let chan_2_id = chan_2.0.contents.short_channel_id;
+	let chan_2_id = chan_2.0.contents.common_fields.short_channel_id;
 	let chan_3 =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 989_000_000);
-	let chan_3_id = chan_3.0.contents.short_channel_id;
+	let chan_3_id = chan_3.0.contents.common_fields.short_channel_id;
 
 	// Marshall data to send the payment
 	let amt_msat = 10_000_000;
@@ -3175,7 +3185,7 @@ fn auto_retry_zero_attempts_send_error() {
 	// Open a single channel that does not have sufficient liquidity for the payment we want to
 	// send.
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 989_000_000);
-	let chan_id = chan.0.contents.short_channel_id;
+	let chan_id = chan.0.contents.common_fields.short_channel_id;
 
 	// Marshall data to send the payment
 	let amt_msat = 10_000_000;
@@ -3518,9 +3528,9 @@ fn no_extra_retries_on_back_to_back_fail() {
 	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
-	let chan_1_scid = chan_1.0.contents.short_channel_id;
+	let chan_1_scid = chan_1.0.contents.common_fields.short_channel_id;
 	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0);
-	let chan_2_scid = chan_2.0.contents.short_channel_id;
+	let chan_2_scid = chan_2.0.contents.common_fields.short_channel_id;
 
 	let amt_msat = 200_000_000;
 	let (_, payment_hash, _, payment_secret) =
@@ -3763,9 +3773,9 @@ fn test_simple_partial_retry() {
 	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
-	let chan_1_scid = chan_1.0.contents.short_channel_id;
+	let chan_1_scid = chan_1.0.contents.common_fields.short_channel_id;
 	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0);
-	let chan_2_scid = chan_2.0.contents.short_channel_id;
+	let chan_2_scid = chan_2.0.contents.common_fields.short_channel_id;
 
 	let amt_msat = 200_000_000;
 	let (_, payment_hash, _, payment_secret) =
@@ -3973,12 +3983,12 @@ fn test_threaded_payment_retries() {
 	// out over channel 3+4. This will let us ignore 99% of the payment value and deal with only
 	// our channel.
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
-	let chan_1_scid = chan_1.0.contents.short_channel_id;
+	let chan_1_scid = chan_1.0.contents.common_fields.short_channel_id;
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 10_000_000, 0);
 	let chan_3 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000_000, 0);
-	let chan_3_scid = chan_3.0.contents.short_channel_id;
+	let chan_3_scid = chan_3.0.contents.common_fields.short_channel_id;
 	let chan_4 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 0);
-	let chan_4_scid = chan_4.0.contents.short_channel_id;
+	let chan_4_scid = chan_4.0.contents.common_fields.short_channel_id;
 
 	let amt_msat = 100_000_000;
 	let (_, payment_hash, _, payment_secret) =
@@ -4646,7 +4656,7 @@ fn test_retry_custom_tlvs() {
 	send_payment(&nodes[2], &[&nodes[1]], 1_500_000);
 
 	// Retry the payment and make sure it succeeds
-	let chan_2_scid = chan_2_update.contents.short_channel_id;
+	let chan_2_scid = chan_2_update.contents.common_fields.short_channel_id;
 	route_params.payment_params.previously_failed_channels.push(chan_2_scid);
 	route.route_params = Some(route_params.clone());
 	nodes[0].router.expect_find_route(route_params, Ok(route));
@@ -5311,8 +5321,8 @@ fn test_non_strict_forwarding() {
 	check_added_monitors(&nodes[1], 1);
 	let routed_scid = route.paths[0].hops[1].short_channel_id;
 	let routed_chan_id = match routed_scid {
-		scid if scid == chan_update_1.contents.short_channel_id => channel_id_1,
-		scid if scid == chan_update_2.contents.short_channel_id => channel_id_2,
+		scid if scid == chan_update_1.contents.common_fields.short_channel_id => channel_id_1,
+		scid if scid == chan_update_2.contents.common_fields.short_channel_id => channel_id_2,
 		_ => panic!("Unexpected short channel id in route"),
 	};
 	// The failure to forward will refer to the channel given in the onion.
@@ -5698,7 +5708,7 @@ fn bolt11_multi_node_mpp_with_retry() {
 	// Create channels: A<>C, C<>D, B<>D
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000_000, 0);
 	let chan_c_d = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 0);
-	let chan_c_d_scid = chan_c_d.0.contents.short_channel_id;
+	let chan_c_d_scid = chan_c_d.0.contents.common_fields.short_channel_id;
 	create_announced_chan_between_nodes(&nodes, 1, 3);
 
 	// Sync all nodes to the same block height, since create_announced_chan_between_nodes only

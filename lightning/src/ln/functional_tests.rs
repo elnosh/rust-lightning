@@ -129,35 +129,39 @@ pub fn fake_network_test() {
 		RouteHop {
 			pubkey: node_c_id,
 			node_features: NodeFeatures::empty(),
-			short_channel_id: chan_2.0.contents.short_channel_id,
+			short_channel_id: chan_2.0.contents.common_fields.short_channel_id,
 			channel_features: ChannelFeatures::empty(),
 			fee_msat: 0,
-			cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32,
+			cltv_expiry_delta: chan_3.0.contents.common_fields.cltv_expiry_delta as u32,
 			maybe_announced_channel: true,
 		},
 		RouteHop {
 			pubkey: node_d_id,
 			node_features: NodeFeatures::empty(),
-			short_channel_id: chan_3.0.contents.short_channel_id,
+			short_channel_id: chan_3.0.contents.common_fields.short_channel_id,
 			channel_features: ChannelFeatures::empty(),
 			fee_msat: 0,
-			cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32,
+			cltv_expiry_delta: chan_4.1.contents.common_fields.cltv_expiry_delta as u32,
 			maybe_announced_channel: true,
 		},
 		RouteHop {
 			pubkey: node_b_id,
 			node_features: nodes[1].node.node_features(),
-			short_channel_id: chan_4.0.contents.short_channel_id,
+			short_channel_id: chan_4.0.contents.common_fields.short_channel_id,
 			channel_features: nodes[1].node.channel_features(),
 			fee_msat: 1000000,
 			cltv_expiry_delta: TEST_FINAL_CLTV,
 			maybe_announced_channel: true,
 		},
 	];
-	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64
-		+ chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
-	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64
-		+ chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
+	hops[1].fee_msat = chan_4.1.contents.common_fields.fee_base_msat as u64
+		+ chan_4.1.contents.common_fields.fee_proportional_millionths as u64
+			* hops[2].fee_msat as u64
+			/ 1000000;
+	hops[0].fee_msat = chan_3.0.contents.common_fields.fee_base_msat as u64
+		+ chan_3.0.contents.common_fields.fee_proportional_millionths as u64
+			* hops[1].fee_msat as u64
+			/ 1000000;
 	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
@@ -173,35 +177,39 @@ pub fn fake_network_test() {
 		RouteHop {
 			pubkey: node_d_id,
 			node_features: NodeFeatures::empty(),
-			short_channel_id: chan_4.0.contents.short_channel_id,
+			short_channel_id: chan_4.0.contents.common_fields.short_channel_id,
 			channel_features: ChannelFeatures::empty(),
 			fee_msat: 0,
-			cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32,
+			cltv_expiry_delta: chan_3.1.contents.common_fields.cltv_expiry_delta as u32,
 			maybe_announced_channel: true,
 		},
 		RouteHop {
 			pubkey: node_c_id,
 			node_features: NodeFeatures::empty(),
-			short_channel_id: chan_3.0.contents.short_channel_id,
+			short_channel_id: chan_3.0.contents.common_fields.short_channel_id,
 			channel_features: ChannelFeatures::empty(),
 			fee_msat: 0,
-			cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32,
+			cltv_expiry_delta: chan_2.1.contents.common_fields.cltv_expiry_delta as u32,
 			maybe_announced_channel: true,
 		},
 		RouteHop {
 			pubkey: node_b_id,
 			node_features: nodes[1].node.node_features(),
-			short_channel_id: chan_2.0.contents.short_channel_id,
+			short_channel_id: chan_2.0.contents.common_fields.short_channel_id,
 			channel_features: nodes[1].node.channel_features(),
 			fee_msat: 1000000,
 			cltv_expiry_delta: TEST_FINAL_CLTV,
 			maybe_announced_channel: true,
 		},
 	];
-	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64
-		+ chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
-	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64
-		+ chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
+	hops[1].fee_msat = chan_2.1.contents.common_fields.fee_base_msat as u64
+		+ chan_2.1.contents.common_fields.fee_proportional_millionths as u64
+			* hops[2].fee_msat as u64
+			/ 1000000;
+	hops[0].fee_msat = chan_3.1.contents.common_fields.fee_base_msat as u64
+		+ chan_3.1.contents.common_fields.fee_proportional_millionths as u64
+			* hops[1].fee_msat as u64
+			/ 1000000;
 	let route =
 		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: Some(route_params) };
 	let path: &[_] = &[&nodes[3], &nodes[2], &nodes[1]];
@@ -1897,7 +1905,7 @@ pub fn test_simple_commitment_revoked_fail_backward() {
 
 			nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[0]);
 			do_commitment_signed_dance(&nodes[0], &nodes[1], commitment_signed, false, true);
-			let scid = chan_2.0.contents.short_channel_id;
+			let scid = chan_2.0.contents.common_fields.short_channel_id;
 			expect_payment_failed_with_update!(nodes[0], payment_hash, false, scid, true);
 		},
 		_ => panic!("Unexpected event"),
@@ -3456,7 +3464,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 			},
 			_ => unreachable!(),
 		}
-		let scid = chan_2.0.contents.short_channel_id;
+		let scid = chan_2.0.contents.common_fields.short_channel_id;
 		expect_payment_failed_with_update!(nodes[0], second_payment_hash, false, scid, false);
 	} else {
 		expect_payment_failed!(nodes[1], second_payment_hash, false);
@@ -4278,7 +4286,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_updates.update_fail_htlcs[0]);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &htlc_updates.commitment_signed, false, true);
-	let failing_scid = chan_2.0.contents.short_channel_id;
+	let failing_scid = chan_2.0.contents.common_fields.short_channel_id;
 	expect_payment_failed_with_update!(nodes[0], dup_payment_hash, false, failing_scid, true);
 
 	// Finally, give node B the HTLC success transaction and ensure it extracts the preimage to
@@ -5568,7 +5576,7 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 		nodes[0],
 		our_payment_hash,
 		false,
-		chan_1_2.0.contents.short_channel_id,
+		chan_1_2.0.contents.common_fields.short_channel_id,
 		false
 	);
 	check_added_monitors(&nodes[0], 1);
@@ -5782,7 +5790,7 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 				},
 			..
 		} => {
-			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
+			assert_eq!(short_channel_id, chan_2.0.contents.common_fields.short_channel_id);
 			assert!(is_permanent);
 			assert_eq!(error_code, Some(0x8000 | 0x4000 | 0x2000 | 4));
 		},
@@ -6157,7 +6165,7 @@ pub fn test_announce_disable_channels() {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
 														   // Check that each channel gets updated exactly once
 				if chans_disabled
-					.insert(msg.contents.short_channel_id, msg.contents.timestamp)
+					.insert(msg.contents.common_fields.short_channel_id, msg.contents.timestamp)
 					.is_some()
 				{
 					panic!("Generated ChannelUpdate for wrong chan!");
@@ -6206,7 +6214,7 @@ pub fn test_announce_disable_channels() {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 0); // The "channel disabled" bit should be off
-				match chans_disabled.remove(&msg.contents.short_channel_id) {
+				match chans_disabled.remove(&msg.contents.common_fields.short_channel_id) {
 					// Each update should have a higher timestamp than the previous one, replacing
 					// the old one.
 					Some(prev_timestamp) => assert!(msg.contents.timestamp > prev_timestamp),
@@ -6944,19 +6952,31 @@ pub fn test_channel_update_has_correct_htlc_maximum_msat() {
 
 	// Assert that `node[0]`'s `ChannelUpdate` is capped at 50 percent of the `channel_value`, as
 	// that's the value of `node[1]`'s `holder_max_htlc_value_in_flight_msat`.
-	assert_eq!(node_0_chan_update.contents.htlc_maximum_msat, channel_value_50_percent_msat);
+	assert_eq!(
+		node_0_chan_update.contents.common_fields.htlc_maximum_msat,
+		channel_value_50_percent_msat
+	);
 	// Assert that `node[1]`'s `ChannelUpdate` is capped at 30 percent of the `channel_value`, as
 	// that's the value of `node[0]`'s `holder_max_htlc_value_in_flight_msat`.
-	assert_eq!(node_1_chan_update.contents.htlc_maximum_msat, channel_value_30_percent_msat);
+	assert_eq!(
+		node_1_chan_update.contents.common_fields.htlc_maximum_msat,
+		channel_value_30_percent_msat
+	);
 
 	// Assert that `node[2]`'s `ChannelUpdate` is capped at 90 percent of the `channel_value`, as
 	// the value of `node[3]`'s `holder_max_htlc_value_in_flight_msat` (100%), exceeds 90% of the
 	// `channel_value`.
-	assert_eq!(node_2_chan_update.contents.htlc_maximum_msat, channel_value_90_percent_msat);
+	assert_eq!(
+		node_2_chan_update.contents.common_fields.htlc_maximum_msat,
+		channel_value_90_percent_msat
+	);
 	// Assert that `node[3]`'s `ChannelUpdate` is capped at 90 percent of the `channel_value`, as
 	// the value of `node[2]`'s `holder_max_htlc_value_in_flight_msat` (95%), exceeds 90% of the
 	// `channel_value`.
-	assert_eq!(node_3_chan_update.contents.htlc_maximum_msat, channel_value_90_percent_msat);
+	assert_eq!(
+		node_3_chan_update.contents.common_fields.htlc_maximum_msat,
+		channel_value_90_percent_msat
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -6976,10 +6996,14 @@ pub fn test_onion_value_mpp_set_calculation() {
 	let node_c_id = nodes[2].node.get_our_node_id();
 	let node_d_id = nodes[3].node.get_our_node_id();
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
+	let chan_1_id =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+	let chan_2_id =
+		create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
+	let chan_3_id =
+		create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.common_fields.short_channel_id;
+	let chan_4_id =
+		create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.common_fields.short_channel_id;
 
 	let total_msat = 100_000;
 	let expected_paths: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
@@ -7111,11 +7135,11 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 	for i in 0..routing_node_count {
 		let routing_node = 2 + i;
 		let src_chan = create_announced_chan_between_nodes(&nodes, src_idx, routing_node);
-		let src_chan_id = src_chan.0.contents.short_channel_id;
+		let src_chan_id = src_chan.0.contents.common_fields.short_channel_id;
 		src_chan_ids.push(src_chan_id);
 
 		let dst_chan = create_announced_chan_between_nodes(&nodes, routing_node, dst_idx);
-		let dst_chan_id = dst_chan.0.contents.short_channel_id;
+		let dst_chan_id = dst_chan.0.contents.common_fields.short_channel_id;
 		dst_chan_ids.push(dst_chan_id);
 		let path = vec![&nodes[routing_node], &nodes[dst_idx]];
 		expected_paths.push(path);
@@ -7194,10 +7218,14 @@ pub fn test_simple_mpp() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
+	let chan_1_id =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+	let chan_2_id =
+		create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
+	let chan_3_id =
+		create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.common_fields.short_channel_id;
+	let chan_4_id =
+		create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.common_fields.short_channel_id;
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], nodes[3], 100_000);
@@ -8269,7 +8297,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
 		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, true, true);
 
-		let failed_scid = chan_announce.contents.short_channel_id;
+		let failed_scid = chan_announce.contents.common_fields.short_channel_id;
 		expect_payment_failed_with_update!(nodes[0], payment_hash, false, failed_scid, true);
 
 		// We should also generate a SpendableOutputs event with the to_self output (once the

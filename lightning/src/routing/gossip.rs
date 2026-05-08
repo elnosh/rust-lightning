@@ -284,7 +284,7 @@ impl MaybeReadable for NetworkUpdate {
 					(0, msg, required),
 				});
 				Ok(Some(Self::ChannelFailure {
-					short_channel_id: msg.0.unwrap().contents.short_channel_id,
+					short_channel_id: msg.0.unwrap().contents.common_fields.short_channel_id,
 					is_permanent: false,
 				}))
 			},
@@ -516,9 +516,11 @@ pub fn verify_channel_announcement<C: Verification>(
 	msg: &ChannelAnnouncement, secp_ctx: &Secp256k1<C>,
 ) -> Result<(), LightningError> {
 	let msg_hash = hash_to_message!(&message_sha256d_hash(&msg.contents)[..]);
-	let node_a = get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement");
+	let node_a =
+		get_pubkey_from_node_id!(msg.contents.common_fields.node_id_1, "channel_announcement");
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &node_a, "channel_announcement");
-	let node_b = get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement");
+	let node_b =
+		get_pubkey_from_node_id!(msg.contents.common_fields.node_id_2, "channel_announcement");
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &node_b, "channel_announcement");
 	let btc_a = get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement");
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &btc_a, "channel_announcement");
@@ -690,7 +692,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 				}
 
 				let batch = batches.last_mut().unwrap();
-				batch.push(chan_announcement.contents.short_channel_id);
+				batch.push(chan_announcement.contents.common_fields.short_channel_id);
 			}
 		}
 		drop(channels);
@@ -2123,7 +2125,7 @@ impl<L: Logger> NetworkGraph<L> {
 	) -> Result<(), LightningError> {
 		let channels = self.channels.read().unwrap();
 
-		if let Some(chan) = channels.get(&msg.short_channel_id) {
+		if let Some(chan) = channels.get(&msg.common_fields.short_channel_id) {
 			if chan.capacity_sats.is_some() {
 				// If we'd previously looked up the channel on-chain and checked the script
 				// against what appears on-chain, ignore the duplicate announcement.
@@ -2136,7 +2138,9 @@ impl<L: Logger> NetworkGraph<L> {
 				// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
 				// as we didn't (necessarily) store the bitcoin keys, and we only really care
 				// if the peers on the channel changed anyway.
-				if msg.node_id_1 == chan.node_one && msg.node_id_2 == chan.node_two {
+				if msg.common_fields.node_id_1 == chan.node_one
+					&& msg.common_fields.node_id_2 == chan.node_two
+				{
 					return Err(LightningError {
 						err: "Already have chain-validated channel".to_owned(),
 						action: ErrorAction::IgnoreDuplicateGossip,
@@ -2163,14 +2167,16 @@ impl<L: Logger> NetworkGraph<L> {
 		&self, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>, utxo_lookup: &Option<U>,
 	) -> Result<(), LightningError> {
-		if msg.node_id_1 == msg.node_id_2 || msg.bitcoin_key_1 == msg.bitcoin_key_2 {
+		if msg.common_fields.node_id_1 == msg.common_fields.node_id_2
+			|| msg.bitcoin_key_1 == msg.bitcoin_key_2
+		{
 			return Err(LightningError {
 				err: "Channel announcement node had a channel with itself".to_owned(),
 				action: ErrorAction::IgnoreError,
 			});
 		}
 
-		if msg.chain_hash != self.chain_hash {
+		if msg.common_fields.chain_hash != self.chain_hash {
 			return Err(LightningError {
 				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -2180,12 +2186,12 @@ impl<L: Logger> NetworkGraph<L> {
 		{
 			let removed_channels = self.removed_channels.lock().unwrap();
 			let removed_nodes = self.removed_nodes.lock().unwrap();
-			if removed_channels.contains_key(&msg.short_channel_id)
-				|| removed_nodes.contains_key(&msg.node_id_1)
-				|| removed_nodes.contains_key(&msg.node_id_2)
+			if removed_channels.contains_key(&msg.common_fields.short_channel_id)
+				|| removed_nodes.contains_key(&msg.common_fields.node_id_1)
+				|| removed_nodes.contains_key(&msg.common_fields.node_id_2)
 			{
 				return Err(LightningError{
-					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", &msg.short_channel_id),
+					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", &msg.common_fields.short_channel_id),
 					action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 			}
 		}
@@ -2204,10 +2210,10 @@ impl<L: Logger> NetworkGraph<L> {
 		}
 
 		let chan_info = ChannelInfo {
-			features: msg.features.clone(),
-			node_one: msg.node_id_1,
+			features: msg.common_fields.features.clone(),
+			node_one: msg.common_fields.node_id_1,
 			one_to_two: None,
-			node_two: msg.node_id_2,
+			node_two: msg.common_fields.node_id_2,
 			two_to_one: None,
 			capacity_sats: utxo_value.map(|a| a.to_sat()),
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY {
@@ -2220,12 +2226,12 @@ impl<L: Logger> NetworkGraph<L> {
 			node_two_counter: u32::max_value(),
 		};
 
-		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)?;
+		self.add_channel_between_nodes(msg.common_fields.short_channel_id, chan_info, utxo_value)?;
 
 		log_gossip!(
 			self.logger,
 			"Added channel_announcement for {}{}",
-			msg.short_channel_id,
+			msg.common_fields.short_channel_id,
 			if !msg.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" }
 		);
 		Ok(())
@@ -2469,7 +2475,7 @@ impl<L: Logger> NetworkGraph<L> {
 	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
 		let chan_enabled = msg.channel_flags & (1 << 1) != (1 << 1);
 
-		if msg.chain_hash != self.chain_hash {
+		if msg.common_fields.chain_hash != self.chain_hash {
 			return Err(LightningError {
 				err: "Channel update chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -2501,12 +2507,12 @@ impl<L: Logger> NetworkGraph<L> {
 		log_gossip!(
 			self.logger,
 			"Updating channel {} in direction {} with timestamp {}",
-			msg.short_channel_id,
+			msg.common_fields.short_channel_id,
 			msg.channel_flags & 1,
 			msg.timestamp
 		);
 
-		if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
+		if msg.common_fields.htlc_maximum_msat > MAX_VALUE_MSAT {
 			return Err(LightningError {
 				err: "htlc_maximum_msat is larger than maximum possible msats".to_owned(),
 				action: ErrorAction::IgnoreError,
@@ -2543,7 +2549,7 @@ impl<L: Logger> NetworkGraph<L> {
 					// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
 					// Don't query UTXO set here to reduce DoS risks.
 					if capacity_sats > MAX_VALUE_MSAT / 1000
-						|| msg.htlc_maximum_msat > capacity_sats * 1000
+						|| msg.common_fields.htlc_maximum_msat > capacity_sats * 1000
 					{
 						return Err(LightningError{err:
 						"htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(),
@@ -2561,7 +2567,7 @@ impl<L: Logger> NetworkGraph<L> {
 		let mut node_pubkey = None;
 		{
 			let channels = self.channels.read().unwrap();
-			match channels.get(&msg.short_channel_id) {
+			match channels.get(&msg.common_fields.short_channel_id) {
 				None => {
 					core::mem::drop(channels);
 					self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
@@ -2610,7 +2616,7 @@ impl<L: Logger> NetworkGraph<L> {
 		}
 
 		let mut channels = self.channels.write().unwrap();
-		if let Some(channel) = channels.get_mut(&msg.short_channel_id) {
+		if let Some(channel) = channels.get_mut(&msg.common_fields.short_channel_id) {
 			check_msg_sanity(channel)?;
 
 			let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY {
@@ -2622,12 +2628,12 @@ impl<L: Logger> NetworkGraph<L> {
 			let new_channel_info = Some(ChannelUpdateInfo {
 				enabled: chan_enabled,
 				last_update: msg.timestamp,
-				cltv_expiry_delta: msg.cltv_expiry_delta,
-				htlc_minimum_msat: msg.htlc_minimum_msat,
-				htlc_maximum_msat: msg.htlc_maximum_msat,
+				cltv_expiry_delta: msg.common_fields.cltv_expiry_delta,
+				htlc_minimum_msat: msg.common_fields.htlc_minimum_msat,
+				htlc_maximum_msat: msg.common_fields.htlc_maximum_msat,
 				fees: RoutingFees {
-					base_msat: msg.fee_base_msat,
-					proportional_millionths: msg.fee_proportional_millionths,
+					base_msat: msg.common_fields.fee_base_msat,
+					proportional_millionths: msg.common_fields.fee_proportional_millionths,
 				},
 				last_update_message,
 			});
@@ -2735,10 +2741,10 @@ pub(crate) mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent, SocketAddress};
 	use crate::ln::msgs::{
-		ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, QueryChannelRange,
-		QueryShortChannelIds, ReplyChannelRange, RoutingMessageHandler,
-		UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement,
-		MAX_VALUE_MSAT,
+		ChannelAnnouncement, ChannelUpdate, CommonChannelAnnouncementFields,
+		CommonChannelUpdateFields, NodeAnnouncement, QueryChannelRange, QueryShortChannelIds,
+		ReplyChannelRange, RoutingMessageHandler, UnsignedChannelAnnouncement,
+		UnsignedChannelUpdate, UnsignedNodeAnnouncement, MAX_VALUE_MSAT,
 	};
 	use crate::routing::gossip::{
 		ChannelInfo, ChannelUpdateInfo, NetworkGraph, NetworkUpdate, NodeAlias,
@@ -2837,11 +2843,13 @@ pub(crate) mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: channelmanager::provided_channel_features(&UserConfig::default()),
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 0,
-			node_id_1: NodeId::from_pubkey(&node_id_1),
-			node_id_2: NodeId::from_pubkey(&node_id_2),
+			common_fields: CommonChannelAnnouncementFields {
+				features: channelmanager::provided_channel_features(&UserConfig::default()),
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+				short_channel_id: 0,
+				node_id_1: NodeId::from_pubkey(&node_id_1),
+				node_id_2: NodeId::from_pubkey(&node_id_2),
+			},
 			bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(
 				&secp_ctx,
 				node_1_btckey,
@@ -2877,16 +2885,18 @@ pub(crate) mod tests {
 		f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelUpdate {
 		let mut unsigned_channel_update = UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 0,
+			common_fields: CommonChannelUpdateFields {
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+				short_channel_id: 0,
+				cltv_expiry_delta: 144,
+				htlc_minimum_msat: 1_000_000,
+				htlc_maximum_msat: 1_000_000,
+				fee_base_msat: 10_000,
+				fee_proportional_millionths: 20,
+			},
 			timestamp: 100,
 			message_flags: 1, // Only must_be_one
 			channel_flags: 0,
-			cltv_expiry_delta: 144,
-			htlc_minimum_msat: 1_000_000,
-			htlc_maximum_msat: 1_000_000,
-			fee_base_msat: 10_000,
-			fee_proportional_millionths: 20,
 			excess_data: Vec::new(),
 		};
 		f(&mut unsigned_channel_update);
@@ -2992,7 +3002,7 @@ pub(crate) mod tests {
 			_ => panic!(),
 		};
 
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 		match network_graph.read_only().channels().get(&scid) {
 			None => panic!(),
 			Some(_) => (),
@@ -3013,7 +3023,7 @@ pub(crate) mod tests {
 
 		let valid_announcement = get_signed_channel_announcement(
 			|unsigned_announcement| {
-				unsigned_announcement.short_channel_id += 1;
+				unsigned_announcement.common_fields.short_channel_id += 1;
 			},
 			node_1_privkey,
 			node_2_privkey,
@@ -3029,7 +3039,7 @@ pub(crate) mod tests {
 			UtxoResult::Sync(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script.clone() }));
 		let valid_announcement = get_signed_channel_announcement(
 			|unsigned_announcement| {
-				unsigned_announcement.short_channel_id += 2;
+				unsigned_announcement.common_fields.short_channel_id += 2;
 			},
 			node_1_privkey,
 			node_2_privkey,
@@ -3040,7 +3050,7 @@ pub(crate) mod tests {
 			_ => panic!(),
 		};
 
-		let scid = valid_announcement.contents.short_channel_id;
+		let scid = valid_announcement.contents.common_fields.short_channel_id;
 		match network_graph.read_only().channels().get(&scid) {
 			None => panic!(),
 			Some(_) => (),
@@ -3070,7 +3080,7 @@ pub(crate) mod tests {
 			// Return error and ignore valid channel announcement if one of the nodes has been tracked as removed.
 			let valid_announcement = get_signed_channel_announcement(
 				|unsigned_announcement| {
-					unsigned_announcement.short_channel_id += 3;
+					unsigned_announcement.common_fields.short_channel_id += 3;
 				},
 				node_1_privkey,
 				node_2_privkey,
@@ -3095,7 +3105,7 @@ pub(crate) mod tests {
 
 		let valid_excess_data_announcement = get_signed_channel_announcement(
 			|unsigned_announcement| {
-				unsigned_announcement.short_channel_id += 4;
+				unsigned_announcement.common_fields.short_channel_id += 4;
 				unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 			},
 			node_1_privkey,
@@ -3133,7 +3143,8 @@ pub(crate) mod tests {
 		// announcement is mainnet).
 		let incorrect_chain_announcement = get_signed_channel_announcement(
 			|unsigned_announcement| {
-				unsigned_announcement.chain_hash = ChainHash::using_genesis_block(Network::Bitcoin);
+				unsigned_announcement.common_fields.chain_hash =
+					ChainHash::using_genesis_block(Network::Bitcoin);
 			},
 			node_1_privkey,
 			node_2_privkey,
@@ -3174,7 +3185,7 @@ pub(crate) mod tests {
 
 			let valid_channel_announcement =
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			short_channel_id = valid_channel_announcement.contents.short_channel_id;
+			short_channel_id = valid_channel_announcement.contents.common_fields.short_channel_id;
 			match gossip_sync
 				.handle_channel_announcement(Some(node_1_pubkey), &valid_channel_announcement)
 			{
@@ -3217,7 +3228,7 @@ pub(crate) mod tests {
 		let valid_channel_update = get_signed_channel_update(
 			|unsigned_channel_update| {
 				unsigned_channel_update.timestamp += 110;
-				unsigned_channel_update.short_channel_id += 1;
+				unsigned_channel_update.common_fields.short_channel_id += 1;
 			},
 			node_1_privkey,
 			&secp_ctx,
@@ -3229,7 +3240,7 @@ pub(crate) mod tests {
 
 		let valid_channel_update = get_signed_channel_update(
 			|unsigned_channel_update| {
-				unsigned_channel_update.htlc_maximum_msat = MAX_VALUE_MSAT + 1;
+				unsigned_channel_update.common_fields.htlc_maximum_msat = MAX_VALUE_MSAT + 1;
 				unsigned_channel_update.timestamp += 110;
 			},
 			node_1_privkey,
@@ -3242,7 +3253,8 @@ pub(crate) mod tests {
 
 		let valid_channel_update = get_signed_channel_update(
 			|unsigned_channel_update| {
-				unsigned_channel_update.htlc_maximum_msat = amount_sats.to_sat() * 1000 + 1;
+				unsigned_channel_update.common_fields.htlc_maximum_msat =
+					amount_sats.to_sat() * 1000 + 1;
 				unsigned_channel_update.timestamp += 110;
 			},
 			node_1_privkey,
@@ -3289,7 +3301,7 @@ pub(crate) mod tests {
 		// update is mainet).
 		let incorrect_chain_update = get_signed_channel_update(
 			|unsigned_channel_update| {
-				unsigned_channel_update.chain_hash =
+				unsigned_channel_update.common_fields.chain_hash =
 					ChainHash::using_genesis_block(Network::Bitcoin);
 			},
 			node_1_privkey,
@@ -3353,8 +3365,10 @@ pub(crate) mod tests {
 
 		// Verify the update was not applied to the network graph
 		let channels = network_graph.read_only();
-		let channel =
-			channels.channels().get(&valid_channel_announcement.contents.short_channel_id).unwrap();
+		let channel = channels
+			.channels()
+			.get(&valid_channel_announcement.contents.common_fields.short_channel_id)
+			.unwrap();
 		assert!(
 			channel.one_to_two.is_none(),
 			"Channel update with dont_forward should not be stored in network graph"
@@ -3382,7 +3396,7 @@ pub(crate) mod tests {
 			// Check that we can manually apply a channel update.
 			let valid_channel_announcement =
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			scid = valid_channel_announcement.contents.short_channel_id;
+			scid = valid_channel_announcement.contents.common_fields.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
 			assert!(network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
@@ -3435,7 +3449,8 @@ pub(crate) mod tests {
 			// Announce a channel to test permanent node failure
 			let valid_channel_announcement =
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			let short_channel_id = valid_channel_announcement.contents.short_channel_id;
+			let short_channel_id =
+				valid_channel_announcement.contents.common_fields.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
 			assert!(network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
@@ -3478,7 +3493,7 @@ pub(crate) mod tests {
 
 		let valid_channel_announcement =
 			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		let scid = valid_channel_announcement.contents.short_channel_id;
+		let scid = valid_channel_announcement.contents.common_fields.short_channel_id;
 		let chain_source: Option<&test_utils::TestChainSource> = None;
 		assert!(network_graph
 			.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
@@ -3668,7 +3683,7 @@ pub(crate) mod tests {
 			// Announce a channel we will update
 			let valid_channel_announcement =
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			short_channel_id = valid_channel_announcement.contents.short_channel_id;
+			short_channel_id = valid_channel_announcement.contents.common_fields.short_channel_id;
 			match gossip_sync
 				.handle_channel_announcement(Some(node_1_pubkey), &valid_channel_announcement)
 			{
@@ -3952,7 +3967,7 @@ pub(crate) mod tests {
 		for scid in scids {
 			let valid_announcement = get_signed_channel_announcement(
 				|unsigned_announcement| {
-					unsigned_announcement.short_channel_id = scid;
+					unsigned_announcement.common_fields.short_channel_id = scid;
 				},
 				node_1_privkey,
 				node_2_privkey,

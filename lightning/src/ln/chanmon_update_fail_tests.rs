@@ -2298,10 +2298,13 @@ fn test_path_paused_mpp() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_1_id =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
 	let (chan_2_ann, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 0, 2);
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
+	let chan_3_id =
+		create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.common_fields.short_channel_id;
+	let chan_4_id =
+		create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.common_fields.short_channel_id;
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
@@ -2313,7 +2316,7 @@ fn test_path_paused_mpp() {
 	route.paths[0].hops[0].short_channel_id = chan_1_id;
 	route.paths[0].hops[1].short_channel_id = chan_3_id;
 	route.paths[1].hops[0].pubkey = node_c_id;
-	route.paths[1].hops[0].short_channel_id = chan_2_ann.contents.short_channel_id;
+	route.paths[1].hops[0].short_channel_id = chan_2_ann.contents.common_fields.short_channel_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
 	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
@@ -4298,12 +4301,14 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	let node_c_id = nodes[2].node.get_our_node_id();
 	let node_d_id = nodes[3].node.get_our_node_id();
 
-	let chan_1_scid = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_scid = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+	let chan_1_scid =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+	let chan_2_scid =
+		create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
 	let (chan_3_update, _, chan_3_id, ..) = create_announced_chan_between_nodes(&nodes, 1, 3);
-	let chan_3_scid = chan_3_update.contents.short_channel_id;
+	let chan_3_scid = chan_3_update.contents.common_fields.short_channel_id;
 	let (chan_4_update, _, chan_4_id, ..) = create_announced_chan_between_nodes(&nodes, 2, 3);
-	let chan_4_scid = chan_4_update.contents.short_channel_id;
+	let chan_4_scid = chan_4_update.contents.common_fields.short_channel_id;
 
 	let (mut route, payment_hash, preimage, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], nodes[3], 100_000);
@@ -5138,12 +5143,14 @@ fn test_mpp_claim_to_holding_cell() {
 	let node_d_id = nodes[3].node.get_our_node_id();
 
 	// First open channels in a diamond and deliver the MPP payment.
-	let chan_1_scid = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_scid = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+	let chan_1_scid =
+		create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+	let chan_2_scid =
+		create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
 	let (chan_3_update, _, chan_3_id, ..) = create_announced_chan_between_nodes(&nodes, 1, 3);
-	let chan_3_scid = chan_3_update.contents.short_channel_id;
+	let chan_3_scid = chan_3_update.contents.common_fields.short_channel_id;
 	let (chan_4_update, _, chan_4_id, ..) = create_announced_chan_between_nodes(&nodes, 2, 3);
-	let chan_4_scid = chan_4_update.contents.short_channel_id;
+	let chan_4_scid = chan_4_update.contents.common_fields.short_channel_id;
 
 	let (mut route, paymnt_hash_1, preimage_1, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], nodes[3], 500_000);

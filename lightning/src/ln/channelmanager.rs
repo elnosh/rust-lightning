@@ -5381,16 +5381,18 @@ impl<
 		let enabled = chan.context.is_enabled();
 
 		let unsigned = msgs::UnsignedChannelUpdate {
-			chain_hash: self.chain_hash,
-			short_channel_id,
+			common_fields: msgs::CommonChannelUpdateFields {
+				chain_hash: self.chain_hash,
+				short_channel_id,
+				cltv_expiry_delta: chan.context.get_cltv_expiry_delta(),
+				htlc_minimum_msat: chan.context.get_counterparty_htlc_minimum_msat(),
+				htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
+				fee_base_msat: chan.context.get_outbound_forwarding_fee_base_msat(),
+				fee_proportional_millionths: chan.context.get_fee_proportional_millionths(),
+			},
 			timestamp: chan.context.get_update_time_counter(),
 			message_flags: 1 | if !chan.context.should_announce() { 1 << 1 } else { 0 }, // must_be_one + dont_forward
 			channel_flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
-			cltv_expiry_delta: chan.context.get_cltv_expiry_delta(),
-			htlc_minimum_msat: chan.context.get_counterparty_htlc_minimum_msat(),
-			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
-			fee_base_msat: chan.context.get_outbound_forwarding_fee_base_msat(),
-			fee_proportional_millionths: chan.context.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
 		// Panic on failure to signal LDK should be restarted to retry signing the `ChannelUpdate`.
@@ -13172,12 +13174,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Returns DoPersist if anything changed, otherwise either SkipPersistNoEvents or an Err.
 	#[rustfmt::skip]
 	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let (chan_counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
+		let (chan_counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&msg.contents.common_fields.short_channel_id) {
 			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			None => {
 				// It's not a local channel
 				if msg.contents.message_flags & (1 << 1) != 0 {
-					log_debug!(self.logger, "Received channel_update for unknown channel {} with dont_forward set. You may wish to check if an incorrect tx_index was passed to chain::Confirm::transactions_confirmed.", msg.contents.short_channel_id);
+					log_debug!(self.logger, "Received channel_update for unknown channel {} with dont_forward set. You may wish to check if an incorrect tx_index was passed to chain::Confirm::transactions_confirmed.", msg.contents.common_fields.short_channel_id);
 				}
 				return Ok(NotifyOption::SkipPersistNoEvents)
 			}
@@ -20757,8 +20759,8 @@ mod tests {
 
 		// We check that the channel info nodes have doesn't change too early, even though we try
 		// to connect messages with new values
-		chan.0.contents.fee_base_msat *= 2;
-		chan.1.contents.fee_base_msat *= 2;
+		chan.0.contents.common_fields.fee_base_msat *= 2;
+		chan.1.contents.common_fields.fee_base_msat *= 2;
 		let node_a_chan_info = nodes[0].node.list_channels_with_counterparty(
 			&nodes[1].node.get_our_node_id()).pop().unwrap();
 		let node_b_chan_info = nodes[1].node.list_channels_with_counterparty(
@@ -21152,10 +21154,10 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-		let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-		let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
-		let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
-		let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
+		let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.common_fields.short_channel_id;
+		let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.common_fields.short_channel_id;
+		let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.common_fields.short_channel_id;
+		let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.common_fields.short_channel_id;
 
 		// Marshall an MPP route.
 		let (mut route, payment_hash, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);

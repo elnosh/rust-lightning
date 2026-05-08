@@ -1561,7 +1561,7 @@ impl<
 							self.message_handler.route_handler.get_next_channel_announcement(c)
 						{
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(
-								announce.contents.short_channel_id + 1,
+								announce.contents.common_fields.short_channel_id + 1,
 							);
 							let msg = Message::ChannelAnnouncement(announce);
 							self.enqueue_message(peer, msg);
@@ -2624,11 +2624,11 @@ impl<
 		match msg {
 			BroadcastGossipMessage::ChannelAnnouncement(msg) => {
 				log_gossip!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
-				let our_channel = self.our_node_id == msg.contents.node_id_1
-					|| self.our_node_id == msg.contents.node_id_2;
-				let scid = msg.contents.short_channel_id;
-				let node_id_1 = msg.contents.node_id_1;
-				let node_id_2 = msg.contents.node_id_2;
+				let our_channel = self.our_node_id == msg.contents.common_fields.node_id_1
+					|| self.our_node_id == msg.contents.common_fields.node_id_2;
+				let scid = msg.contents.common_fields.short_channel_id;
+				let node_id_1 = msg.contents.common_fields.node_id_1;
+				let node_id_2 = msg.contents.common_fields.node_id_2;
 				let msg: Message<CMH::CustomMessage> = Message::ChannelAnnouncement(msg);
 				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
@@ -2719,7 +2719,7 @@ impl<
 					msg
 				);
 				let our_channel = self.our_node_id == node_id_1 || self.our_node_id == node_id_2;
-				let scid = msg.contents.short_channel_id;
+				let scid = msg.contents.common_fields.short_channel_id;
 				let msg: Message<CMH::CustomMessage> = Message::ChannelUpdate(msg);
 				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
@@ -3137,7 +3137,7 @@ impl<
 						} => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendChannelAnnouncement event in peer_handler for node {} for short channel id {}",
 									node_id,
-									msg.contents.short_channel_id);
+									msg.contents.common_fields.short_channel_id);
 							let msg = Message::ChannelAnnouncement(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 							let update_msg = Message::ChannelUpdate(update_msg);
@@ -3147,9 +3147,9 @@ impl<
 							);
 						},
 						MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
-							log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-							let node_id_1 = msg.contents.node_id_1;
-							let node_id_2 = msg.contents.node_id_2;
+							log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.common_fields.short_channel_id);
+							let node_id_1 = msg.contents.common_fields.node_id_1;
+							let node_id_2 = msg.contents.common_fields.node_id_2;
 							match route_handler.handle_channel_announcement(None, &msg) {
 								Ok(_)
 								| Err(LightningError {
@@ -3235,7 +3235,7 @@ impl<
 							log_trace!(
 								WithContext::from(&self.logger, Some(*node_id), None, None),
 								"Handling SendChannelUpdate event in peer_handler for channel {}",
-								msg.contents.short_channel_id
+								msg.contents.common_fields.short_channel_id
 							);
 							let msg = Message::ChannelUpdate(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);

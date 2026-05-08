@@ -2616,6 +2616,7 @@ mod tests {
 	use crate::util::config::UserConfig;
 
 	use crate::ln::channelmanager;
+	use crate::ln::msgs;
 	use crate::ln::msgs::{
 		ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate,
 	};
@@ -2706,11 +2707,13 @@ mod tests {
 		let node_2_secret = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let secp_ctx = Secp256k1::new();
 		let unsigned_announcement = UnsignedChannelAnnouncement {
-			features: channelmanager::provided_channel_features(&UserConfig::default()),
-			chain_hash: genesis_hash,
-			short_channel_id,
-			node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_key)),
-			node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_key)),
+			common_fields: msgs::CommonChannelAnnouncementFields {
+				features: channelmanager::provided_channel_features(&UserConfig::default()),
+				chain_hash: genesis_hash,
+				short_channel_id,
+				node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_key)),
+				node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_key)),
+			},
 			bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_secret)),
 			bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_secret)),
 			excess_data: Vec::new(),
@@ -2737,16 +2740,18 @@ mod tests {
 		let genesis_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let secp_ctx = Secp256k1::new();
 		let unsigned_update = UnsignedChannelUpdate {
-			chain_hash: genesis_hash,
-			short_channel_id,
+			common_fields: msgs::CommonChannelUpdateFields {
+				chain_hash: genesis_hash,
+				short_channel_id,
+				cltv_expiry_delta: 18,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat,
+				fee_base_msat: 1,
+				fee_proportional_millionths: 0,
+			},
 			timestamp,
 			message_flags: 1, // Only must_be_one
 			channel_flags,
-			cltv_expiry_delta: 18,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat,
-			fee_base_msat: 1,
-			fee_proportional_millionths: 0,
 			excess_data: Vec::new(),
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_update.encode()[..])[..]);

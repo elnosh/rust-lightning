@@ -92,7 +92,7 @@ fn do_test_htlc_interception_flags(
 			} else if flag == Flag::ToUnknownSCIDs {
 				(42424242, chan_id, None)
 			} else {
-				(chan_upd.contents.short_channel_id, chan_id, Some(false))
+				(chan_upd.contents.common_fields.short_channel_id, chan_id, Some(false))
 			}
 		},
 		_ => panic!("Combined flags aren't allowed"),

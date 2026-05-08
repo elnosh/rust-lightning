@@ -96,7 +96,7 @@ fn chanmon_fail_from_stale_commitment() {
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &fail_updates.commitment_signed, true, true);
-	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
+	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.common_fields.short_channel_id, true);
 }
 
 fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction, has_anchors_htlc_event: bool) -> Vec<SpendableOutputDescriptor> {

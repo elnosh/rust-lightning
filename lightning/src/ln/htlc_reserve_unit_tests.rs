@@ -697,7 +697,7 @@ pub fn holding_cell_htlc_counting() {
 	let commitment = &bs_fail_updates.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
 
-	let failing_scid = chan_2.0.contents.short_channel_id;
+	let failing_scid = chan_2.0.contents.common_fields.short_channel_id;
 	expect_payment_failed_with_update!(nodes[0], payment_hash_2, false, failing_scid, false);
 
 	// Now forward all the pending HTLCs and claim them back

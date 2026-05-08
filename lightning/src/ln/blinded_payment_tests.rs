@@ -57,22 +57,22 @@ pub fn blinded_payment_path(
 		intermediate_nodes.push(PaymentForwardNode {
 			node_id: *node_id,
 			tlvs: ForwardTlvs {
-				short_channel_id: chan_upd.short_channel_id,
+				short_channel_id: chan_upd.common_fields.short_channel_id,
 				payment_relay: PaymentRelay {
-					cltv_expiry_delta: chan_upd.cltv_expiry_delta,
-					fee_proportional_millionths: chan_upd.fee_proportional_millionths,
-					fee_base_msat: chan_upd.fee_base_msat,
+					cltv_expiry_delta: chan_upd.common_fields.cltv_expiry_delta,
+					fee_proportional_millionths: chan_upd.common_fields.fee_proportional_millionths,
+					fee_base_msat: chan_upd.common_fields.fee_base_msat,
 				},
 				payment_constraints: PaymentConstraints {
 					max_cltv_expiry: u32::max_value(),
 					htlc_minimum_msat: intro_node_min_htlc_opt.take()
-						.unwrap_or_else(|| channel_upds[idx - 1].htlc_minimum_msat),
+						.unwrap_or_else(|| channel_upds[idx - 1].common_fields.htlc_minimum_msat),
 				},
 				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: intro_node_max_htlc_opt.take()
-				.unwrap_or_else(|| channel_upds[idx - 1].htlc_maximum_msat),
+				.unwrap_or_else(|| channel_upds[idx - 1].common_fields.htlc_maximum_msat),
 		});
 	}
 
@@ -81,7 +81,7 @@ pub fn blinded_payment_path(
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat:
-				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
+				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().common_fields.htlc_minimum_msat),
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
@@ -91,7 +91,7 @@ pub fn blinded_payment_path(
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPaymentPath::new(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), receive_auth_key,
-		payee_tlvs, intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
+		payee_tlvs, intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().common_fields.htlc_maximum_msat),
 		TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
 }
@@ -170,7 +170,7 @@ fn do_one_hop_blinded_path(success: bool) {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
@@ -214,7 +214,7 @@ fn one_hop_blinded_path_with_dummy_hops() {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
@@ -294,7 +294,7 @@ fn mpp_to_one_hop_blinded_path() {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd_1_3.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
@@ -732,7 +732,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	}
 
 	if intro_fails {
-		cause_error!(nodes[0], nodes[1], nodes[2], chan_id_1_2, chan_upd_1_2.short_channel_id);
+		cause_error!(nodes[0], nodes[1], nodes[2], chan_id_1_2, chan_upd_1_2.common_fields.short_channel_id);
 		check_added_monitors(&nodes[1], 1);
 		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]], false);
 		return
@@ -747,7 +747,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	check_added_monitors(&nodes[2], 0);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &updates_1_2.commitment_signed, true, true);
 
-	cause_error!(nodes[1], nodes[2], nodes[3], chan_id_2_3, chan_upd_2_3.short_channel_id);
+	cause_error!(nodes[1], nodes[2], nodes[3], chan_id_2_3, chan_upd_2_3.common_fields.short_channel_id);
 	check_added_monitors(&nodes[2], 1);
 
 	let mut updates = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
@@ -793,7 +793,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let intercept_scid = nodes[1].node.get_intercept_scid();
 	let mut intercept_chan_upd = chan_upd;
-	intercept_chan_upd.short_channel_id = intercept_scid;
+	intercept_chan_upd.common_fields.short_channel_id = intercept_scid;
 	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&intercept_chan_upd],
 		&chanmon_cfgs[2].keys_manager);
@@ -1008,7 +1008,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		// BlindedPayInfo (to ensure pathfinding still succeeds).
 		let high_htlc_min_bp = {
 			let mut high_htlc_minimum_upd = chan_upd_1_2.clone();
-			high_htlc_minimum_upd.htlc_minimum_msat = amt_msat + 1000;
+			high_htlc_minimum_upd.common_fields.htlc_minimum_msat = amt_msat + 1000;
 			let high_htlc_min_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 				nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&high_htlc_minimum_upd],
 				&chanmon_cfgs[2].keys_manager);
@@ -1299,14 +1299,14 @@ fn min_htlc() {
 	let min_htlc_msat = {
 		// The min htlc for this setup is nodes[2]'s htlc_minimum_msat minus the
 		// following fees.
-		let post_base_fee = chan_2_3.1.contents.htlc_minimum_msat - chan_2_3.0.contents.fee_base_msat as u64;
-		let prop_fee = chan_2_3.0.contents.fee_proportional_millionths as u64;
+		let post_base_fee = chan_2_3.1.contents.common_fields.htlc_minimum_msat - chan_2_3.0.contents.common_fields.fee_base_msat as u64;
+		let prop_fee = chan_2_3.0.contents.common_fields.fee_proportional_millionths as u64;
 		(post_base_fee * 1_000_000 + 1_000_000 + prop_fee - 1) / (prop_fee + 1_000_000)
 	};
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(min_htlc_msat), None);
 	let mut route_params = get_blinded_route_parameters(
-		min_htlc_msat, payment_secret, chan_1_2.1.contents.htlc_minimum_msat,
-		chan_1_2.1.contents.htlc_maximum_msat, vec![nodes[1].node.get_our_node_id(),
+		min_htlc_msat, payment_secret, chan_1_2.1.contents.common_fields.htlc_minimum_msat,
+		chan_1_2.1.contents.common_fields.htlc_maximum_msat, vec![nodes[1].node.get_our_node_id(),
 		nodes[2].node.get_our_node_id(), nodes[3].node.get_our_node_id()],
 		&[&chan_1_2.0.contents, &chan_2_3.0.contents], &chanmon_cfgs[3].keys_manager);
 	assert_eq!(min_htlc_msat,
@@ -1383,7 +1383,7 @@ fn conditionally_round_fwd_amt() {
 	let amt_msat = 100_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret,
-		chan_1_2.1.contents.htlc_minimum_msat, chan_1_2.1.contents.htlc_maximum_msat,
+		chan_1_2.1.contents.common_fields.htlc_minimum_msat, chan_1_2.1.contents.common_fields.htlc_maximum_msat,
 		vec![nodes[1].node.get_our_node_id(), nodes[2].node.get_our_node_id(),
 		nodes[3].node.get_our_node_id(), nodes[4].node.get_our_node_id()],
 		&[&chan_1_2.0.contents, &chan_2_3.0.contents, &chan_3_4.0.contents],
@@ -1417,7 +1417,7 @@ fn custom_tlvs_to_blinded_path() {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
@@ -1471,7 +1471,7 @@ fn fails_receive_tlvs_authentication() {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
@@ -1501,7 +1501,7 @@ fn fails_receive_tlvs_authentication() {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			htlc_minimum_msat: chan_upd.common_fields.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};

@@ -818,7 +818,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 						gossip_sync.get_next_channel_announcement(chan_progress);
 					assert!(orig_announcements == deserialized_announcements);
 					chan_progress = match orig_announcements {
-						Some(announcement) => announcement.0.contents.short_channel_id + 1,
+						Some(announcement) => {
+							announcement.0.contents.common_fields.short_channel_id + 1
+						},
 						None => break,
 					};
 				}
@@ -1978,10 +1980,13 @@ pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(
 			assert!(*announcement == *msg);
 			let update_msg = update_msg.clone().unwrap();
 			assert_eq!(
-				update_msg.contents.short_channel_id,
-				announcement.contents.short_channel_id
+				update_msg.contents.common_fields.short_channel_id,
+				announcement.contents.common_fields.short_channel_id
 			);
-			assert_eq!(update_msg.contents.short_channel_id, bs_update.contents.short_channel_id);
+			assert_eq!(
+				update_msg.contents.common_fields.short_channel_id,
+				bs_update.contents.common_fields.short_channel_id
+			);
 			update_msg
 		},
 		_ => panic!("Unexpected event"),
@@ -5138,7 +5143,7 @@ macro_rules! get_chan_reestablish_msgs {
 			} = msg
 			{
 				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
-				announcements.insert(msg.contents.short_channel_id);
+				announcements.insert(msg.contents.common_fields.short_channel_id);
 			} else {
 				panic!("Unexpected event")
 			}
