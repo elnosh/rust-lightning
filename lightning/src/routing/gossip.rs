@@ -15,10 +15,11 @@ use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::{PublicKey, Verification};
+use bitcoin::secp256k1::{Message, PublicKey, Verification};
 
+use bitcoin::hashes::sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::network::Network;
 
 use crate::ln::msgs;
@@ -74,6 +75,16 @@ const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 /// Maximum number of short_channel_ids that will be encoded in one gossip reply message.
 /// This value ensures a reply fits within the 65k payload limit and is consistent with other implementations.
 const MAX_SCIDS_PER_REPLY: usize = 8000;
+
+/// Message name used in the [`taproot_gossip_msg_hash`] signature-message construction for `channel_announcement_2`.
+pub const CHANNEL_ANNOUNCEMENT_2_MSG_NAME: &str = "channel_announcement_2";
+/// Message name used in the [`taproot_gossip_msg_hash`] signature-message construction for `channel_update_2`.
+pub const CHANNEL_UPDATE_2_MSG_NAME: &str = "channel_update_2";
+/// Message name used in the [`taproot_gossip_msg_hash`] signature-message construction for `node_announcement_2`.
+pub const NODE_ANNOUNCEMENT_2_MSG_NAME: &str = "node_announcement_2";
+
+/// Field name used in the [`taproot_gossip_msg_hash`] signature-message construction for every gossip v2 signature.
+pub const SIGNATURE_FIELD_NAME: &str = "signature";
 
 /// A compressed pubkey which a node uses to sign announcements and decode HTLCs routed through it.
 ///
@@ -528,6 +539,23 @@ pub fn verify_channel_announcement<C: Verification>(
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &btc_b, "channel_announcement");
 
 	Ok(())
+}
+
+/// Constructs the BIP-340 message digest used by gossip v2 signatures.
+pub fn taproot_gossip_msg_hash(message_name: &str, field_name: &str, message: &[u8]) -> Message {
+	let mut tag_engine = sha256::Hash::engine();
+	tag_engine.input(b"lightning");
+	tag_engine.input(message_name.as_bytes());
+	tag_engine.input(field_name.as_bytes());
+	let tag_hash = sha256::Hash::from_engine(tag_engine);
+
+	let message_hash = sha256::Hash::hash(message);
+
+	let mut engine = sha256::Hash::engine();
+	engine.input(tag_hash.as_ref());
+	engine.input(tag_hash.as_ref());
+	engine.input(message_hash.as_ref());
+	Message::from_digest(sha256::Hash::from_engine(engine).to_byte_array())
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessageHandler
