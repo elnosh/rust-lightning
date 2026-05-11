@@ -7,5 +7,7 @@ fn fixed_time_eq(a: &[u8], b: &[u8]) -> bool {
 	a == b
 }
 
+#[allow(dead_code)]
+pub(crate) mod musig2;
 pub(crate) mod streams;
 pub(crate) mod utils;

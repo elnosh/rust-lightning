@@ -40,6 +40,8 @@ lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bech32 = { version = "0.11.0", default-features = false }
 bitcoin = { version = "0.32.4", default-features = false, features = ["secp-recovery"] }
+# Pulled in for MuSig2 for v2 gossip channel-announcement verification.
+secp256k1 = { version = "0.32.0-beta.2", default-features = false, features = ["alloc"] }
 chacha20-poly1305 = { version = "0.2.0", default-features = false }
 
 dnssec-prover = { version = "0.6", default-features = false }
