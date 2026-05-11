@@ -1655,6 +1655,21 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
 		Ok(Some((NodeId::from_slice(&[2; 33]).unwrap(), NodeId::from_slice(&[3; 33]).unwrap())))
 	}
+	fn handle_channel_announcement_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelAnnouncementV2,
+	) -> Result<bool, msgs::LightningError> {
+		Ok(false)
+	}
+	fn handle_channel_update_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdateV2,
+	) -> Result<Option<(NodeId, NodeId)>, msgs::LightningError> {
+		Ok(None)
+	}
+	fn handle_node_announcement_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::NodeAnnouncementV2,
+	) -> Result<bool, msgs::LightningError> {
+		Ok(false)
+	}
 	fn get_next_channel_announcement(
 		&self, starting_point: u64,
 	) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)>
@@ -1670,9 +1685,25 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		}
 	}
 
+	fn get_next_channel_announcement_v2(
+		&self, _starting_point: u64,
+	) -> Option<(
+		msgs::ChannelAnnouncementV2,
+		Option<msgs::ChannelUpdateV2>,
+		Option<msgs::ChannelUpdateV2>,
+	)> {
+		None
+	}
+
 	fn get_next_node_announcement(
 		&self, _starting_point: Option<&NodeId>,
 	) -> Option<msgs::NodeAnnouncement> {
+		None
+	}
+
+	fn get_next_node_announcement_v2(
+		&self, _starting_point: Option<&NodeId>,
+	) -> Option<msgs::NodeAnnouncementV2> {
 		None
 	}
 
