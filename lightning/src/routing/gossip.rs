@@ -568,6 +568,24 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 		}
 	}
 
+	fn handle_channel_announcement_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelAnnouncementV2,
+	) -> Result<bool, LightningError> {
+		Ok(false)
+	}
+
+	fn handle_channel_update_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdateV2,
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		Ok(None)
+	}
+
+	fn handle_node_announcement_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::NodeAnnouncementV2,
+	) -> Result<bool, LightningError> {
+		Ok(false)
+	}
+
 	fn get_next_channel_announcement(
 		&self, starting_point: u64,
 	) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
@@ -608,6 +626,22 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 				}
 			}
 		}
+		None
+	}
+
+	fn get_next_channel_announcement_v2(
+		&self, _starting_point: u64,
+	) -> Option<(
+		msgs::ChannelAnnouncementV2,
+		Option<msgs::ChannelUpdateV2>,
+		Option<msgs::ChannelUpdateV2>,
+	)> {
+		None
+	}
+
+	fn get_next_node_announcement_v2(
+		&self, _starting_point: Option<&NodeId>,
+	) -> Option<msgs::NodeAnnouncementV2> {
 		None
 	}
 

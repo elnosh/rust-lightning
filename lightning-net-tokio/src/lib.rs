@@ -823,14 +823,39 @@ mod tests {
 		) -> Result<Option<(NodeId, NodeId)>, LightningError> {
 			Ok(None)
 		}
+		fn handle_node_announcement_v2(
+			&self, _their_node_id: Option<PublicKey>, _msg: &NodeAnnouncementV2,
+		) -> Result<bool, LightningError> {
+			Ok(false)
+		}
+		fn handle_channel_announcement_v2(
+			&self, _their_node_id: Option<PublicKey>, _msg: &ChannelAnnouncementV2,
+		) -> Result<bool, LightningError> {
+			Ok(false)
+		}
+		fn handle_channel_update_v2(
+			&self, _their_node_id: Option<PublicKey>, _msg: &ChannelUpdateV2,
+		) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+			Ok(None)
+		}
 		fn get_next_channel_announcement(
 			&self, _starting_point: u64,
 		) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 			None
 		}
+		fn get_next_channel_announcement_v2(
+			&self, _starting_point: u64,
+		) -> Option<(ChannelAnnouncementV2, Option<ChannelUpdateV2>, Option<ChannelUpdateV2>)> {
+			None
+		}
 		fn get_next_node_announcement(
 			&self, _starting_point: Option<&NodeId>,
 		) -> Option<NodeAnnouncement> {
+			None
+		}
+		fn get_next_node_announcement_v2(
+			&self, _starting_point: Option<&NodeId>,
+		) -> Option<NodeAnnouncementV2> {
 			None
 		}
 		fn handle_reply_channel_range(

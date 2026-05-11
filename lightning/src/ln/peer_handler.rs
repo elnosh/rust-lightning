@@ -186,15 +186,44 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
 		Ok(None)
 	}
+	fn handle_channel_announcement_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelAnnouncementV2,
+	) -> Result<bool, LightningError> {
+		Ok(false)
+	}
+	fn handle_channel_update_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdateV2,
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		Ok(None)
+	}
+	fn handle_node_announcement_v2(
+		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::NodeAnnouncementV2,
+	) -> Result<bool, LightningError> {
+		Ok(false)
+	}
 	fn get_next_channel_announcement(
 		&self, _starting_point: u64,
 	) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)>
 	{
 		None
 	}
+	fn get_next_channel_announcement_v2(
+		&self, _starting_point: u64,
+	) -> Option<(
+		msgs::ChannelAnnouncementV2,
+		Option<msgs::ChannelUpdateV2>,
+		Option<msgs::ChannelUpdateV2>,
+	)> {
+		None
+	}
 	fn get_next_node_announcement(
 		&self, _starting_point: Option<&NodeId>,
 	) -> Option<msgs::NodeAnnouncement> {
+		None
+	}
+	fn get_next_node_announcement_v2(
+		&self, _starting_point: Option<&NodeId>,
+	) -> Option<msgs::NodeAnnouncementV2> {
 		None
 	}
 	fn handle_reply_channel_range(

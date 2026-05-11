@@ -8442,14 +8442,20 @@ mod tests {
 
 		// Enable channel 1
 		let update_1 = make_chan_update(ChanUpdate {
-			scid: 1, timestamp: 2, cltv_expiry_delta: (1 << 4) | 1, htlc_maximum_msat: 10_000_000,
+			scid: 1,
+			timestamp: 2,
+			cltv_expiry_delta: (1 << 4) | 1,
+			htlc_maximum_msat: 10_000_000,
 			..Default::default()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, update_1);
 
 		// Set the fee on channel 3 to 1 sat, max HTLC to 1M msat
 		let update_3 = make_chan_update(ChanUpdate {
-			scid: 3, timestamp: 2, cltv_expiry_delta: (3 << 4) | 1, htlc_maximum_msat: 1_000_000,
+			scid: 3,
+			timestamp: 2,
+			cltv_expiry_delta: (3 << 4) | 1,
+			htlc_maximum_msat: 1_000_000,
 			fee_base_msat: 1_000,
 			..Default::default()
 		});
@@ -8457,7 +8463,10 @@ mod tests {
 
 		// Set the fee on channel 13 to 1 sat, max HTLC to 1M msat
 		let update_13 = make_chan_update(ChanUpdate {
-			scid: 13, timestamp: 2, cltv_expiry_delta: (13 << 4) | 1, htlc_maximum_msat: 1_000_000,
+			scid: 13,
+			timestamp: 2,
+			cltv_expiry_delta: (13 << 4) | 1,
+			htlc_maximum_msat: 1_000_000,
 			fee_base_msat: 1_000,
 			..Default::default()
 		});
@@ -8465,7 +8474,10 @@ mod tests {
 
 		// Set the fee on channel 4 to 1 sat, max HTLC to 1M msat
 		let update_4 = make_chan_update(ChanUpdate {
-			scid: 4, timestamp: 2, cltv_expiry_delta: (4 << 4) | 1, htlc_maximum_msat: 1_000_000,
+			scid: 4,
+			timestamp: 2,
+			cltv_expiry_delta: (4 << 4) | 1,
+			htlc_maximum_msat: 1_000_000,
 			fee_base_msat: 1_000,
 			..Default::default()
 		});
@@ -8484,16 +8496,23 @@ mod tests {
 
 			// Set the fee on channel 16 to 2 sats, max HTLC to 3M msat
 			let update_a = make_chan_update(ChanUpdate {
-				scid: i + 42, timestamp: 2, cltv_expiry_delta: (42 << 4) | 1,
-				htlc_maximum_msat: 1_000_000, fee_base_msat: 1_000,
+				scid: i + 42,
+				timestamp: 2,
+				cltv_expiry_delta: (42 << 4) | 1,
+				htlc_maximum_msat: 1_000_000,
+				fee_base_msat: 1_000,
 				..Default::default()
 			});
 			update_channel(&gossip_sync, &secp_ctx, &privkeys[7], update_a);
 
 			// Enable channel 16 by providing an update in both directions
 			let update_b = make_chan_update(ChanUpdate {
-				scid: i + 42, timestamp: 2, channel_flags: 1, cltv_expiry_delta: (42 << 4) | 1,
-				htlc_maximum_msat: 10_000_000, fee_base_msat: u32::MAX,
+				scid: i + 42,
+				timestamp: 2,
+				channel_flags: 1,
+				cltv_expiry_delta: (42 << 4) | 1,
+				htlc_maximum_msat: 10_000_000,
+				fee_base_msat: u32::MAX,
 				..Default::default()
 			});
 			update_channel(&gossip_sync, &secp_ctx, &privkeys[2], update_b);
@@ -8530,7 +8549,10 @@ mod tests {
 
 		// Set the fee on channel 16 to 2 sats, max HTLC to 3M msat
 		let update_16_a = make_chan_update(ChanUpdate {
-			scid: 16, timestamp: 2, cltv_expiry_delta: (16 << 4) | 1, htlc_maximum_msat: 3_000_000,
+			scid: 16,
+			timestamp: 2,
+			cltv_expiry_delta: (16 << 4) | 1,
+			htlc_maximum_msat: 3_000_000,
 			fee_base_msat: 2_000,
 			..Default::default()
 		});
@@ -8538,8 +8560,12 @@ mod tests {
 
 		// Enable channel 16 by providing an update in both directions
 		let update_16_b = make_chan_update(ChanUpdate {
-			scid: 16, timestamp: 2, channel_flags: 1, cltv_expiry_delta: (16 << 4) | 1,
-			htlc_maximum_msat: 10_000_000, fee_base_msat: u32::MAX,
+			scid: 16,
+			timestamp: 2,
+			channel_flags: 1,
+			cltv_expiry_delta: (16 << 4) | 1,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: u32::MAX,
 			..Default::default()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], update_16_b);
