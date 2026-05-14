@@ -153,6 +153,55 @@ macro_rules! encode_tlv_stream {
 	}
 }
 
+/// Like [`_encode_tlv_stream`], but interleaves `$extra_tlvs` with the known TLVs
+/// by type so the wire stream stays in monotonically increasing type order.
+///
+/// `$extra_tlvs` must be sorted by type and must not collide with any `$type` in
+/// the known set.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! _encode_tlv_stream_interleaved {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt $(, $self: ident)?)),* $(,)*}, $extra_tlvs: expr) => { {
+		#[allow(unused_imports)]
+		use $crate::{
+			ln::msgs::DecodeError,
+			util::ser,
+			util::ser::BigSize,
+			util::ser::Writeable,
+		};
+
+		let mut __extras = $extra_tlvs.iter().peekable();
+		$(
+			#[allow(unused_comparisons)]
+			loop {
+				match __extras.peek() {
+					Some(extra) if extra.0 < $type => {},
+					_ => break,
+				}
+				let extra = __extras.next().unwrap();
+				BigSize(extra.0).write($stream)?;
+				BigSize(extra.1.len() as u64).write($stream)?;
+				$stream.write_all(&extra.1)?;
+			}
+			$crate::_encode_tlv!($stream, $type, $field, $fieldty $(, $self)?);
+		)*
+		for extra in __extras {
+			BigSize(extra.0).write($stream)?;
+			BigSize(extra.1.len() as u64).write($stream)?;
+			$stream.write_all(&extra.1)?;
+		}
+
+		#[allow(unused_mut, unused_variables, unused_assignments)]
+		#[cfg(debug_assertions)]
+		{
+			let mut last_seen: Option<u64> = None;
+			$(
+				$crate::_check_encoded_tlv_order!(last_seen, $type, $fieldty);
+			)*
+		}
+	} }
+}
+
 /// Implementation of [`encode_tlv_stream`].
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]

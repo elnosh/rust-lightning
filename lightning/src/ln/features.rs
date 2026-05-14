@@ -95,6 +95,8 @@ impl_feature_write_without_length!(ChannelTypeFeatures);
 impl_feature_write_without_length!(InvoiceRequestFeatures);
 impl_feature_write_without_length!(OfferFeatures);
 impl_feature_write_without_length!(BlindedHopFeatures);
+impl_feature_write_without_length!(ChannelFeatures);
+impl_feature_write_without_length!(NodeFeatures);
 
 #[cfg(test)]
 mod tests {

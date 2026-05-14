@@ -734,6 +734,7 @@ impl_array!(4, u8); // for IPv4
 impl_array!(12, u8); // for OnionV2
 impl_array!(16, u8); // for IPv6
 impl_array!(32, u8); // for channel id & hmac
+impl_array!(35, u8); // for OnionV3 (ed25519 pubkey + checksum + version)
 impl_array!(PUBLIC_KEY_SIZE, u8); // for PublicKey
 impl_array!(64, u8); // for ecdsa::Signature and schnorr::Signature
 impl_array!(1300, u8); // for OnionPacket.hop_data

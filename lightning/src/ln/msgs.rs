@@ -4575,6 +4575,393 @@ impl LengthReadable for NodeAnnouncement {
 	}
 }
 
+// V2 gossip messages are pure TLV streams. The signed range is `0..=159` and the
+// BIP-340 signature sits at TLV `160`. Unknown odd TLVs observed inside the
+// signed range are kept on the parsed struct so the message can be re-emitted
+// byte-identically and forward-compatible fields are preserved across rebroadcast.
+
+const V2_SIGNED_RANGE: core::ops::RangeInclusive<u64> = 0..=159;
+
+// Maximum allowed length of `node_announcement_2`'s alias TLV value (BOLT-1059).
+const NODE_ANNOUNCEMENT_V2_ALIAS_MAX_LEN: usize = 32;
+
+// Per-entry hostname length is `u16` here, unlike the standalone [`Hostname`]
+// serialization which uses a `u8` length.
+struct V2DnsHostnamesRef<'a>(&'a [(Hostname, u16)]);
+
+impl Writeable for V2DnsHostnamesRef<'_> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		for (host, port) in self.0 {
+			let bytes = host.as_bytes();
+			(bytes.len() as u16).write(w)?;
+			w.write_all(bytes)?;
+			port.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+struct V2DnsHostnames(Vec<(Hostname, u16)>);
+
+impl Readable for V2DnsHostnames {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes = read_to_end(r)?;
+		let mut result = Vec::new();
+		let mut cursor = &bytes[..];
+		while !cursor.is_empty() {
+			let len: u16 = Readable::read(&mut cursor)?;
+			if cursor.len() < (len as usize) + 2 {
+				return Err(DecodeError::InvalidValue);
+			}
+			let mut name = vec![0u8; len as usize];
+			cursor.read_exact(&mut name)?;
+			let host = Hostname::try_from(name).map_err(|_| DecodeError::InvalidValue)?;
+			let port: u16 = Readable::read(&mut cursor)?;
+			result.push((host, port));
+		}
+		Ok(V2DnsHostnames(result))
+	}
+}
+
+impl Writeable for UnsignedChannelAnnouncementV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		_encode_tlv_stream_interleaved!(w, {
+			(0, self.common_fields.chain_hash, required),
+			(2, WithoutLength(&self.common_fields.features), required),
+			(4, self.common_fields.short_channel_id, required),
+			(6, self.capacity_sats, required),
+			(8, self.common_fields.node_id_1, required),
+			(10, self.common_fields.node_id_2, required),
+			(12, self.bitcoin_key_1, option),
+			(14, self.bitcoin_key_2, option),
+			(16, self.merkle_root_hash, option),
+			(18, self.outpoint, required),
+		}, &self.excess_tlvs);
+		Ok(())
+	}
+}
+
+impl UnsignedChannelAnnouncementV2 {
+	fn read_signed_range<R: AsRef<[u8]>>(cursor: &mut Cursor<R>) -> Result<Self, DecodeError> {
+		let mut chain_hash: Option<ChainHash> = None;
+		let mut features: Option<WithoutLength<ChannelFeatures>> = None;
+		let mut short_channel_id: Option<u64> = None;
+		let mut capacity_sats: Option<u64> = None;
+		let mut node_id_1: Option<NodeId> = None;
+		let mut node_id_2: Option<NodeId> = None;
+		let mut bitcoin_key_1: Option<NodeId> = None;
+		let mut bitcoin_key_2: Option<NodeId> = None;
+		let mut merkle_root_hash: Option<[u8; 32]> = None;
+		let mut outpoint: Option<OutPoint> = None;
+		let mut excess_tlvs: Vec<(u64, Vec<u8>)> = Vec::new();
+		let rewind = |c: &mut Cursor<R>, off: usize| {
+			c.set_position(c.position().checked_sub(off as u64).expect("Cannot rewind past 0."));
+		};
+		_decode_tlv_stream_range!(cursor, V2_SIGNED_RANGE, rewind, {
+			(0, chain_hash, option),
+			(2, features, option),
+			(4, short_channel_id, option),
+			(6, capacity_sats, option),
+			(8, node_id_1, option),
+			(10, node_id_2, option),
+			(12, bitcoin_key_1, option),
+			(14, bitcoin_key_2, option),
+			(16, merkle_root_hash, option),
+			(18, outpoint, option),
+		}, |typ: u64, reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if typ % 2 == 0 {
+				return Ok(false);
+			}
+			let mut buf = Vec::new();
+			reader.read_to_limit(&mut buf, reader.remaining_bytes())?;
+			excess_tlvs.push((typ, buf));
+			Ok(true)
+		});
+		Ok(Self {
+			common_fields: CommonChannelAnnouncementFields {
+				features: features.map(|w| w.0).ok_or(DecodeError::InvalidValue)?,
+				chain_hash: chain_hash.ok_or(DecodeError::InvalidValue)?,
+				short_channel_id: short_channel_id.ok_or(DecodeError::InvalidValue)?,
+				node_id_1: node_id_1.ok_or(DecodeError::InvalidValue)?,
+				node_id_2: node_id_2.ok_or(DecodeError::InvalidValue)?,
+			},
+			capacity_sats: capacity_sats.ok_or(DecodeError::InvalidValue)?,
+			bitcoin_key_1,
+			bitcoin_key_2,
+			merkle_root_hash,
+			outpoint: outpoint.ok_or(DecodeError::InvalidValue)?,
+			excess_tlvs,
+		})
+	}
+}
+
+impl LengthReadable for UnsignedChannelAnnouncementV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
+		let mut cursor = Cursor::new(bytes.0);
+		let result = Self::read_signed_range(&mut cursor)?;
+		if cursor.position() < cursor.get_ref().len() as u64 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(result)
+	}
+}
+
+impl Writeable for ChannelAnnouncementV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.contents.write(w)?;
+		encode_tlv_stream!(w, { (160, self.signature, required) });
+		Ok(())
+	}
+}
+
+impl LengthReadable for ChannelAnnouncementV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
+		let mut cursor = Cursor::new(bytes.0);
+		let contents = UnsignedChannelAnnouncementV2::read_signed_range(&mut cursor)?;
+		let signature = read_v2_signature(&mut cursor)?;
+		if cursor.position() < cursor.get_ref().len() as u64 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(Self { signature, contents })
+	}
+}
+
+impl Writeable for UnsignedChannelUpdateV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let second_peer_marker = if self.second_peer { Some(()) } else { None };
+		_encode_tlv_stream_interleaved!(w, {
+			(0, self.common_fields.chain_hash, required),
+			(2, self.common_fields.short_channel_id, required),
+			(4, self.block_height, required),
+			(6, self.disable_flags, required),
+			(8, second_peer_marker, option),
+			(10, self.common_fields.cltv_expiry_delta, required),
+			(12, self.common_fields.htlc_minimum_msat, required),
+			(14, self.common_fields.htlc_maximum_msat, required),
+			(16, self.common_fields.fee_base_msat, required),
+			(18, self.common_fields.fee_proportional_millionths, required),
+		}, &self.excess_tlvs);
+		Ok(())
+	}
+}
+
+impl UnsignedChannelUpdateV2 {
+	fn read_signed_range<R: AsRef<[u8]>>(cursor: &mut Cursor<R>) -> Result<Self, DecodeError> {
+		let mut chain_hash: Option<ChainHash> = None;
+		let mut short_channel_id: Option<u64> = None;
+		let mut block_height: Option<u32> = None;
+		let mut disable_flags: Option<u8> = None;
+		let mut second_peer_marker: Option<()> = None;
+		let mut cltv_expiry_delta: Option<u16> = None;
+		let mut htlc_minimum_msat: Option<u64> = None;
+		let mut htlc_maximum_msat: Option<u64> = None;
+		let mut fee_base_msat: Option<u32> = None;
+		let mut fee_proportional_millionths: Option<u32> = None;
+		let mut excess_tlvs: Vec<(u64, Vec<u8>)> = Vec::new();
+		let rewind = |c: &mut Cursor<R>, off: usize| {
+			c.set_position(c.position().checked_sub(off as u64).expect("Cannot rewind past 0."));
+		};
+		_decode_tlv_stream_range!(cursor, V2_SIGNED_RANGE, rewind, {
+			(0, chain_hash, option),
+			(2, short_channel_id, option),
+			(4, block_height, option),
+			(6, disable_flags, option),
+			(8, second_peer_marker, option),
+			(10, cltv_expiry_delta, option),
+			(12, htlc_minimum_msat, option),
+			(14, htlc_maximum_msat, option),
+			(16, fee_base_msat, option),
+			(18, fee_proportional_millionths, option),
+		}, |typ: u64, reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if typ % 2 == 0 {
+				return Ok(false);
+			}
+			let mut buf = Vec::new();
+			reader.read_to_limit(&mut buf, reader.remaining_bytes())?;
+			excess_tlvs.push((typ, buf));
+			Ok(true)
+		});
+		Ok(Self {
+			common_fields: CommonChannelUpdateFields {
+				chain_hash: chain_hash.ok_or(DecodeError::InvalidValue)?,
+				short_channel_id: short_channel_id.ok_or(DecodeError::InvalidValue)?,
+				cltv_expiry_delta: cltv_expiry_delta.ok_or(DecodeError::InvalidValue)?,
+				htlc_minimum_msat: htlc_minimum_msat.ok_or(DecodeError::InvalidValue)?,
+				htlc_maximum_msat: htlc_maximum_msat.ok_or(DecodeError::InvalidValue)?,
+				fee_base_msat: fee_base_msat.ok_or(DecodeError::InvalidValue)?,
+				fee_proportional_millionths: fee_proportional_millionths
+					.ok_or(DecodeError::InvalidValue)?,
+			},
+			block_height: block_height.ok_or(DecodeError::InvalidValue)?,
+			disable_flags: disable_flags.ok_or(DecodeError::InvalidValue)?,
+			second_peer: second_peer_marker.is_some(),
+			excess_tlvs,
+		})
+	}
+}
+
+impl LengthReadable for UnsignedChannelUpdateV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
+		let mut cursor = Cursor::new(bytes.0);
+		let result = Self::read_signed_range(&mut cursor)?;
+		if cursor.position() < cursor.get_ref().len() as u64 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(result)
+	}
+}
+
+impl Writeable for ChannelUpdateV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.contents.write(w)?;
+		encode_tlv_stream!(w, { (160, self.signature, required) });
+		Ok(())
+	}
+}
+
+impl LengthReadable for ChannelUpdateV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
+		let mut cursor = Cursor::new(bytes.0);
+		let contents = UnsignedChannelUpdateV2::read_signed_range(&mut cursor)?;
+		let signature = read_v2_signature(&mut cursor)?;
+		if cursor.position() < cursor.get_ref().len() as u64 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(Self { signature, contents })
+	}
+}
+
+impl Writeable for UnsignedNodeAnnouncementV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let alias = self.alias.as_ref().map(WithoutLength);
+		let ipv4 = (!self.ipv4_addresses.is_empty()).then(|| WithoutLength(&self.ipv4_addresses));
+		let ipv6 = (!self.ipv6_addresses.is_empty()).then(|| WithoutLength(&self.ipv6_addresses));
+		let tor_v3 =
+			(!self.tor_v3_addresses.is_empty()).then(|| WithoutLength(&self.tor_v3_addresses));
+		let dns = (!self.dns_hostnames.is_empty()).then(|| V2DnsHostnamesRef(&self.dns_hostnames));
+		_encode_tlv_stream_interleaved!(w, {
+			(0, WithoutLength(&self.features), required),
+			(1, self.rgb, option),
+			(2, self.block_height, required),
+			(3, alias, option),
+			(4, self.node_id, required),
+			(5, ipv4, option),
+			(7, ipv6, option),
+			(9, tor_v3, option),
+			(11, dns, option),
+		}, &self.excess_tlvs);
+		Ok(())
+	}
+}
+
+impl UnsignedNodeAnnouncementV2 {
+	fn read_signed_range<R: AsRef<[u8]>>(cursor: &mut Cursor<R>) -> Result<Self, DecodeError> {
+		let mut features: Option<WithoutLength<NodeFeatures>> = None;
+		let mut rgb: Option<[u8; 3]> = None;
+		let mut block_height: Option<u32> = None;
+		let mut alias: Option<WithoutLength<Vec<u8>>> = None;
+		let mut node_id: Option<NodeId> = None;
+		let mut ipv4: Option<WithoutLength<Vec<([u8; 4], u16)>>> = None;
+		let mut ipv6: Option<WithoutLength<Vec<([u8; 16], u16)>>> = None;
+		let mut tor_v3: Option<WithoutLength<Vec<([u8; 35], u16)>>> = None;
+		let mut dns: Option<V2DnsHostnames> = None;
+		let mut excess_tlvs: Vec<(u64, Vec<u8>)> = Vec::new();
+		let rewind = |c: &mut Cursor<R>, off: usize| {
+			c.set_position(c.position().checked_sub(off as u64).expect("Cannot rewind past 0."));
+		};
+		_decode_tlv_stream_range!(cursor, V2_SIGNED_RANGE, rewind, {
+			(0, features, option),
+			(1, rgb, option),
+			(2, block_height, option),
+			(3, alias, option),
+			(4, node_id, option),
+			(5, ipv4, option),
+			(7, ipv6, option),
+			(9, tor_v3, option),
+			(11, dns, option),
+		}, |typ: u64, reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if typ % 2 == 0 {
+				return Ok(false);
+			}
+			let mut buf = Vec::new();
+			reader.read_to_limit(&mut buf, reader.remaining_bytes())?;
+			excess_tlvs.push((typ, buf));
+			Ok(true)
+		});
+		let alias = alias.map(|w| w.0);
+		if let Some(ref a) = alias {
+			if a.len() > NODE_ANNOUNCEMENT_V2_ALIAS_MAX_LEN {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		Ok(Self {
+			features: features.map(|w| w.0).ok_or(DecodeError::InvalidValue)?,
+			block_height: block_height.ok_or(DecodeError::InvalidValue)?,
+			node_id: node_id.ok_or(DecodeError::InvalidValue)?,
+			rgb,
+			alias,
+			ipv4_addresses: ipv4.map(|w| w.0).unwrap_or_default(),
+			ipv6_addresses: ipv6.map(|w| w.0).unwrap_or_default(),
+			tor_v3_addresses: tor_v3.map(|w| w.0).unwrap_or_default(),
+			dns_hostnames: dns.map(|w| w.0).unwrap_or_default(),
+			excess_tlvs,
+		})
+	}
+}
+
+impl LengthReadable for UnsignedNodeAnnouncementV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
+		let mut cursor = Cursor::new(bytes.0);
+		let result = Self::read_signed_range(&mut cursor)?;
+		if cursor.position() < cursor.get_ref().len() as u64 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(result)
+	}
+}
+
+impl Writeable for NodeAnnouncementV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.contents.write(w)?;
+		encode_tlv_stream!(w, { (160, self.signature, required) });
+		Ok(())
+	}
+}
+
+impl LengthReadable for NodeAnnouncementV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
+		let mut cursor = Cursor::new(bytes.0);
+		let contents = UnsignedNodeAnnouncementV2::read_signed_range(&mut cursor)?;
+		let signature = read_v2_signature(&mut cursor)?;
+		if cursor.position() < cursor.get_ref().len() as u64 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(Self { signature, contents })
+	}
+}
+
+fn read_v2_signature<R: AsRef<[u8]>>(
+	cursor: &mut Cursor<R>,
+) -> Result<schnorr::Signature, DecodeError> {
+	let typ: BigSize = Readable::read(cursor)?;
+	if typ.0 != 160 {
+		return Err(DecodeError::InvalidValue);
+	}
+	let len: BigSize = Readable::read(cursor)?;
+	let mut reader = FixedLengthReader::new(cursor, len.0);
+	let signature: schnorr::Signature = Readable::read(&mut reader)?;
+	if reader.bytes_remain() {
+		return Err(DecodeError::InvalidValue);
+	}
+	Ok(signature)
+}
+
 impl LengthReadable for QueryShortChannelIds {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
@@ -7224,5 +7611,204 @@ mod tests {
 		do_test_htlc_accountable_from_u8(Some(7), Some(true));
 		do_test_htlc_accountable_from_u8(Some(3), Some(false));
 		do_test_htlc_accountable_from_u8(Some(0), Some(false));
+	}
+
+	fn v2_channel_announcement(
+		bitcoin_keys: bool, merkle_root: bool,
+	) -> msgs::UnsignedChannelAnnouncementV2 {
+		msgs::UnsignedChannelAnnouncementV2 {
+			common_fields: msgs::CommonChannelAnnouncementFields {
+				features: ChannelFeatures::empty(),
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
+				short_channel_id: 0x1122334455667788,
+				node_id_1: NodeId::from_pubkey(&pubkey(0x11)),
+				node_id_2: NodeId::from_pubkey(&pubkey(0x22)),
+			},
+			capacity_sats: 100_000,
+			outpoint: OutPoint {
+				txid: Txid::from_raw_hash(bitcoin::hashes::Hash::from_slice(&[7u8; 32]).unwrap()),
+				index: 3,
+			},
+			bitcoin_key_1: if bitcoin_keys {
+				Some(NodeId::from_pubkey(&pubkey(0x33)))
+			} else {
+				None
+			},
+			bitcoin_key_2: if bitcoin_keys {
+				Some(NodeId::from_pubkey(&pubkey(0x44)))
+			} else {
+				None
+			},
+			merkle_root_hash: if merkle_root { Some([9u8; 32]) } else { None },
+			excess_tlvs: Vec::new(),
+		}
+	}
+
+	fn read_msg<T: LengthReadable>(bytes: &[u8]) -> Result<T, msgs::DecodeError> {
+		let mut cursor = Cursor::new(bytes);
+		let mut reader = crate::util::ser::FixedLengthReader::new(&mut cursor, bytes.len() as u64);
+		T::read_from_fixed_length_buffer(&mut reader)
+	}
+
+	#[test]
+	fn v2_channel_announcement_roundtrip() {
+		for bitcoin_keys in [false, true] {
+			for merkle_root in [false, true] {
+				let unsigned = v2_channel_announcement(bitcoin_keys, merkle_root);
+				let encoded = unsigned.encode();
+				let decoded: msgs::UnsignedChannelAnnouncementV2 = read_msg(&encoded).unwrap();
+				assert_eq!(decoded, unsigned);
+				assert_eq!(decoded.encode(), encoded);
+
+				let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[1u8; 64]).unwrap();
+				let signed = msgs::ChannelAnnouncementV2 { signature: sig, contents: unsigned };
+				let encoded = signed.encode();
+				let decoded: msgs::ChannelAnnouncementV2 = read_msg(&encoded).unwrap();
+				assert_eq!(decoded, signed);
+				assert_eq!(decoded.encode(), encoded);
+			}
+		}
+	}
+
+	#[test]
+	fn v2_channel_announcement_preserves_unknown_odd_tlv() {
+		// Append an unknown odd TLV at type 19 (in the signed range, after the last known
+		// type 18). Decode then re-emit must be byte-identical.
+		let unsigned = v2_channel_announcement(true, false);
+		let mut encoded = unsigned.encode();
+		BigSize(19).write(&mut encoded).unwrap();
+		BigSize(4).write(&mut encoded).unwrap();
+		encoded.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+		let decoded: msgs::UnsignedChannelAnnouncementV2 = read_msg(&encoded).unwrap();
+		assert_eq!(decoded.excess_tlvs, vec![(19u64, vec![0xDE, 0xAD, 0xBE, 0xEF])]);
+		assert_eq!(decoded.encode(), encoded);
+	}
+
+	#[test]
+	fn v2_channel_announcement_interleaves_unknown_odd_tlv() {
+		// Decode a stream where an unknown odd TLV at type 17 sits between known
+		// types 16 and 18. Re-emit must interleave it in the same position.
+		let unsigned = v2_channel_announcement(false, true);
+		let canonical = unsigned.encode();
+
+		// Build a wire encoding manually with type 17 inserted before type 18.
+		let mut tweaked = Vec::new();
+		let mut cursor = Cursor::new(&canonical[..]);
+		let total_len = canonical.len() as u64;
+		while cursor.position() < total_len {
+			let pos = cursor.position();
+			let typ: BigSize = Readable::read(&mut cursor).unwrap();
+			let len: BigSize = Readable::read(&mut cursor).unwrap();
+			if typ.0 == 18 {
+				BigSize(17u64).write(&mut tweaked).unwrap();
+				BigSize(2u64).write(&mut tweaked).unwrap();
+				tweaked.extend_from_slice(&[0xBE, 0xEF]);
+			}
+			let header_len = cursor.position() - pos;
+			tweaked.extend_from_slice(&canonical[pos as usize..pos as usize + header_len as usize]);
+			let value_start = cursor.position() as usize;
+			tweaked.extend_from_slice(&canonical[value_start..value_start + len.0 as usize]);
+			cursor.set_position(cursor.position() + len.0);
+		}
+
+		let decoded: msgs::UnsignedChannelAnnouncementV2 = read_msg(&tweaked).unwrap();
+		assert_eq!(decoded.excess_tlvs, vec![(17u64, vec![0xBE, 0xEF])]);
+		assert_eq!(decoded.encode(), tweaked);
+	}
+
+	#[test]
+	fn v2_channel_announcement_rejects_unknown_even_tlv() {
+		let unsigned = v2_channel_announcement(true, false);
+		let mut bytes = unsigned.encode();
+		BigSize(20).write(&mut bytes).unwrap();
+		BigSize(1).write(&mut bytes).unwrap();
+		bytes.push(0xFF);
+
+		let res: Result<msgs::UnsignedChannelAnnouncementV2, _> = read_msg(&bytes);
+		assert!(matches!(res, Err(msgs::DecodeError::UnknownRequiredFeature)));
+	}
+
+	fn v2_channel_update(second_peer: bool) -> msgs::UnsignedChannelUpdateV2 {
+		msgs::UnsignedChannelUpdateV2 {
+			common_fields: msgs::CommonChannelUpdateFields {
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
+				short_channel_id: 0xAABBCCDDEEFF0011,
+				cltv_expiry_delta: 144,
+				htlc_minimum_msat: 1_000,
+				htlc_maximum_msat: 10_000_000,
+				fee_base_msat: 1_000,
+				fee_proportional_millionths: 100,
+			},
+			block_height: 850_000,
+			disable_flags: 0b101,
+			second_peer,
+			excess_tlvs: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn v2_channel_update_roundtrip() {
+		for second_peer in [false, true] {
+			let unsigned = v2_channel_update(second_peer);
+			let encoded = unsigned.encode();
+			let decoded: msgs::UnsignedChannelUpdateV2 = read_msg(&encoded).unwrap();
+			assert_eq!(decoded, unsigned);
+			assert_eq!(decoded.encode(), encoded);
+
+			let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[2u8; 64]).unwrap();
+			let signed = msgs::ChannelUpdateV2 { signature: sig, contents: unsigned };
+			let encoded = signed.encode();
+			let decoded: msgs::ChannelUpdateV2 = read_msg(&encoded).unwrap();
+			assert_eq!(decoded, signed);
+			assert_eq!(decoded.encode(), encoded);
+		}
+	}
+
+	fn v2_node_announcement(with_addrs: bool) -> msgs::UnsignedNodeAnnouncementV2 {
+		let (ipv4_addresses, ipv6_addresses, tor_v3_addresses, dns_hostnames) = if with_addrs {
+			let mut tor = [0u8; 35];
+			tor[..32].copy_from_slice(&[2u8; 32]);
+			tor[32..34].copy_from_slice(&0x0202u16.to_be_bytes());
+			tor[34] = 2;
+			(
+				vec![([10, 0, 0, 1], 9735u16), ([10, 0, 0, 2], 9736u16)],
+				vec![([1u8; 16], 9735u16)],
+				vec![(tor, 9735u16)],
+				vec![(Hostname::try_from("example.com".to_string()).unwrap(), 9735u16)],
+			)
+		} else {
+			(Vec::new(), Vec::new(), Vec::new(), Vec::new())
+		};
+		msgs::UnsignedNodeAnnouncementV2 {
+			features: NodeFeatures::empty(),
+			block_height: 850_001,
+			node_id: NodeId::from_pubkey(&pubkey(0x55)),
+			rgb: Some([0x12, 0x34, 0x56]),
+			alias: Some(b"alice".to_vec()),
+			ipv4_addresses,
+			ipv6_addresses,
+			tor_v3_addresses,
+			dns_hostnames,
+			excess_tlvs: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn v2_node_announcement_roundtrip() {
+		for with_addrs in [false, true] {
+			let unsigned = v2_node_announcement(with_addrs);
+			let encoded = unsigned.encode();
+			let decoded: msgs::UnsignedNodeAnnouncementV2 = read_msg(&encoded).unwrap();
+			assert_eq!(decoded, unsigned);
+			assert_eq!(decoded.encode(), encoded);
+
+			let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[3u8; 64]).unwrap();
+			let signed = msgs::NodeAnnouncementV2 { signature: sig, contents: unsigned };
+			let encoded = signed.encode();
+			let decoded: msgs::NodeAnnouncementV2 = read_msg(&encoded).unwrap();
+			assert_eq!(decoded, signed);
+			assert_eq!(decoded.encode(), encoded);
+		}
 	}
 }
