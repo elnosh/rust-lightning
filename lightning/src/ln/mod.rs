@@ -24,8 +24,10 @@ pub mod msgs;
 pub mod onion_payment;
 pub mod our_peer_storage;
 pub mod peer_handler;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(ldk_bench)))]
 mod resource_manager;
+#[cfg(all(feature = "std", ldk_bench))]
+pub mod resource_manager;
 pub mod script;
 pub mod types;
 

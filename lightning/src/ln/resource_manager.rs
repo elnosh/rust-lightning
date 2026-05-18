@@ -1014,6 +1014,206 @@ impl AggregatedWindowAverage {
 	}
 }
 
+#[cfg(ldk_bench)]
+pub mod benches {
+	use super::*;
+	use crate::util::test_utils::TestKeysInterface;
+	use bitcoin::Network;
+	use criterion::Criterion;
+
+	const NUM_CHANNELS: u64 = 1000;
+	const MAX_ACCEPTED_HTLCS: u16 = 200;
+	const MAX_IN_FLIGHT_MSAT: u64 = 100_000_000;
+	const BASE_TS: u64 = 1_700_000_000;
+	const INCOMING_AMT_MSAT: u64 = 10_000;
+	const OUTGOING_AMT_MSAT: u64 = 9_000;
+	const CLTV: u32 = 1000;
+	const HEIGHT_ADDED: u32 = 500;
+
+	fn make_manager() -> DefaultResourceManager {
+		let manager = DefaultResourceManager::new(ResourceManagerConfig::default()).unwrap();
+		for i in 0..NUM_CHANNELS {
+			manager.add_channel(i, MAX_IN_FLIGHT_MSAT, MAX_ACCEPTED_HTLCS, BASE_TS).unwrap();
+		}
+		manager
+	}
+
+	/// Performs one add_htlc + resolve_htlc on the (incoming, outgoing) pair so that
+	/// `general_bucket.channels_slots` is populated and the next add_htlc on this pair
+	/// takes the warm path.
+	fn warm_pair<ES: EntropySource>(
+		manager: &DefaultResourceManager, incoming: u64, outgoing: u64, htlc_id: u64,
+		entropy_source: &ES,
+	) {
+		let outcome = manager
+			.add_htlc(
+				incoming,
+				INCOMING_AMT_MSAT,
+				CLTV,
+				outgoing,
+				OUTGOING_AMT_MSAT,
+				false,
+				htlc_id,
+				HEIGHT_ADDED,
+				BASE_TS,
+				entropy_source,
+			)
+			.unwrap();
+		debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+		manager.resolve_htlc(incoming, htlc_id, outgoing, true, BASE_TS + 30).unwrap();
+	}
+
+	/// Bench: add_htlc + resolve_htlc through the general bucket, pair already warm,
+	/// outgoing channel otherwise idle.
+	pub fn add_resolve_general_warm(bench: &mut Criterion) {
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let manager = make_manager();
+		let (incoming, outgoing) = (0u64, 1u64);
+		warm_pair(&manager, incoming, outgoing, u64::MAX, &entropy_source);
+
+		bench.bench_function("resource_manager_add_resolve_general_warm", |b| {
+			b.iter(|| {
+				let outcome = manager
+					.add_htlc(
+						incoming,
+						INCOMING_AMT_MSAT,
+						CLTV,
+						outgoing,
+						OUTGOING_AMT_MSAT,
+						false,
+						u64::MAX,
+						HEIGHT_ADDED,
+						BASE_TS,
+						&entropy_source,
+					)
+					.unwrap();
+				debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+				manager.resolve_htlc(incoming, u64::MAX, outgoing, true, BASE_TS + 30).unwrap();
+			});
+		});
+	}
+
+	/// Bench: same as above, but with 100 unresolved HTLCs pending on the outgoing channel
+	/// (sourced from 100 distinct incoming channels). Exercises the linear scans in
+	/// `outgoing_in_flight_risk` and `pending_htlcs_in_congestion`.
+	pub fn add_resolve_general_loaded(bench: &mut Criterion) {
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let manager = make_manager();
+		let (incoming, outgoing) = (0u64, 1u64);
+
+		// Pre-fill outgoing with 100 pending general-bucket HTLCs from distinct incomings.
+		for i in 0..100u64 {
+			let src = 100 + i;
+			let outcome = manager
+				.add_htlc(
+					src,
+					INCOMING_AMT_MSAT,
+					CLTV,
+					outgoing,
+					OUTGOING_AMT_MSAT,
+					false,
+					0,
+					HEIGHT_ADDED,
+					BASE_TS,
+					&entropy_source,
+				)
+				.unwrap();
+			debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+		}
+
+		warm_pair(&manager, incoming, outgoing, u64::MAX, &entropy_source);
+
+		bench.bench_function("resource_manager_add_resolve_general_loaded", |b| {
+			b.iter(|| {
+				let outcome = manager
+					.add_htlc(
+						incoming,
+						INCOMING_AMT_MSAT,
+						CLTV,
+						outgoing,
+						OUTGOING_AMT_MSAT,
+						false,
+						u64::MAX,
+						HEIGHT_ADDED,
+						BASE_TS,
+						&entropy_source,
+					)
+					.unwrap();
+				debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+				manager.resolve_htlc(incoming, u64::MAX, outgoing, true, BASE_TS + 30).unwrap();
+			});
+		});
+	}
+
+	/// Bench: add_htlc + resolve_htlc routed through the congestion bucket.
+	/// Setup fills general for the (incoming=0, outgoing=1) pair so each measured
+	/// add_htlc falls through general -> reputation (insufficient) -> congestion.
+	pub fn add_resolve_congestion(bench: &mut Criterion) {
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let manager = make_manager();
+		let (incoming, outgoing) = (0u64, 1u64);
+
+		// Fill general for this pair so subsequent add_htlc calls fall through to the
+		// congestion bucket. With the default 40% general allocation and
+		// max_accepted_htlcs=200, general_slots=80 and per_channel_slots=5.
+		for slot_htlc_id in 0..5u64 {
+			let outcome = manager
+				.add_htlc(
+					incoming,
+					INCOMING_AMT_MSAT,
+					CLTV,
+					outgoing,
+					OUTGOING_AMT_MSAT,
+					false,
+					slot_htlc_id,
+					HEIGHT_ADDED,
+					BASE_TS,
+					&entropy_source,
+				)
+				.unwrap();
+			debug_assert!(matches!(outcome, ForwardingOutcome::Forward(false)));
+		}
+
+		bench.bench_function("resource_manager_add_resolve_congestion", |b| {
+			b.iter(|| {
+				let outcome = manager
+					.add_htlc(
+						incoming,
+						INCOMING_AMT_MSAT,
+						CLTV,
+						outgoing,
+						OUTGOING_AMT_MSAT,
+						false,
+						u64::MAX,
+						HEIGHT_ADDED,
+						BASE_TS,
+						&entropy_source,
+					)
+					.unwrap();
+				debug_assert!(matches!(outcome, ForwardingOutcome::Forward(true)));
+				manager.resolve_htlc(incoming, u64::MAX, outgoing, true, BASE_TS + 30).unwrap();
+			});
+		});
+	}
+
+	/// Bench: isolated cost of `assign_slots_for_channel`.
+	pub fn assign_slots_for_channel_bench(bench: &mut Criterion) {
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let salt = entropy_source.get_secure_random_bytes();
+		let total_slots: u16 = 80;
+		let per_channel_slots: u8 = 5;
+
+		bench.bench_function("resource_manager_assign_slots_for_channel", |b| {
+			let mut counter: u64 = 0;
+			b.iter(|| {
+				counter = counter.wrapping_add(1);
+				let _ = assign_slots_for_channel(0, counter, salt, per_channel_slots, total_slots)
+					.unwrap();
+			});
+		});
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1025,7 +1225,7 @@ mod tests {
 			resource_manager::{
 				assign_slots_for_channel, bucket_allocations, AggregatedWindowAverage,
 				BucketAssigned, BucketResources, Channel, DecayingAverage, DefaultResourceManager,
-				ForwardingOutcome, GeneralBucket, HtlcRef, ResourceManagerConfig,
+				ForwardingOutcome, GeneralBucket, HtlcRef, PendingHTLC, ResourceManagerConfig,
 			},
 		},
 		sign::EntropySource,
@@ -1034,6 +1234,202 @@ mod tests {
 	use bitcoin::Network;
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
+
+	#[derive(Default)]
+	struct MemoryFootprint {
+		channels_map: usize,
+		pending_htlcs: usize,
+		general_slots_occupied: usize,
+		general_channels_slots: usize,
+		general_inner_slot_vecs: usize,
+		last_congestion_misuse: usize,
+	}
+
+	impl MemoryFootprint {
+		fn total(&self) -> usize {
+			self.channels_map
+				+ self.pending_htlcs
+				+ self.general_slots_occupied
+				+ self.general_channels_slots
+				+ self.general_inner_slot_vecs
+				+ self.last_congestion_misuse
+		}
+	}
+
+	fn walk_footprint(manager: &DefaultResourceManager) -> MemoryFootprint {
+		fn hashmap_bytes<K, V>(capacity: usize) -> usize {
+			capacity * (core::mem::size_of::<(K, V)>() + 1)
+		}
+
+		let channels = manager.channels.lock().unwrap();
+		let mut fp = MemoryFootprint::default();
+
+		fp.channels_map = hashmap_bytes::<u64, Channel>(channels.capacity());
+
+		for channel in channels.values() {
+			fp.pending_htlcs +=
+				hashmap_bytes::<HtlcRef, PendingHTLC>(channel.pending_htlcs.capacity());
+
+			fp.general_slots_occupied += channel.general_bucket.slots_occupied.capacity()
+				* core::mem::size_of::<Option<u64>>();
+
+			fp.general_channels_slots += hashmap_bytes::<u64, (Vec<u16>, [u8; 32])>(
+				channel.general_bucket.channels_slots.capacity(),
+			);
+			for (slots, _) in channel.general_bucket.channels_slots.values() {
+				fp.general_inner_slot_vecs += slots.capacity() * core::mem::size_of::<u16>();
+			}
+
+			fp.last_congestion_misuse +=
+				hashmap_bytes::<u64, u64>(channel.last_congestion_misuse.capacity());
+		}
+
+		fp
+	}
+
+	fn populate_symmetric(
+		manager: &DefaultResourceManager, num_channels: u64, htlcs_per_channel: u64,
+		max_accepted_htlcs: u16, max_in_flight_msat: u64, entropy_source: &TestKeysInterface,
+	) {
+		const BASE_TS: u64 = 1_700_000_000;
+		const CLTV: u32 = 1000;
+		const HEIGHT_ADDED: u32 = 500;
+		const HTLC_AMT_MSAT: u64 = 10_000;
+
+		for i in 0..num_channels {
+			manager.add_channel(i, max_in_flight_msat, max_accepted_htlcs, BASE_TS).unwrap();
+		}
+
+		for incoming in 0..num_channels {
+			for out in 0..num_channels {
+				if incoming == out {
+					continue;
+				}
+				let outcome = manager
+					.add_htlc(
+						incoming,
+						HTLC_AMT_MSAT,
+						CLTV,
+						out,
+						HTLC_AMT_MSAT - 1,
+						false,
+						0,
+						HEIGHT_ADDED,
+						BASE_TS,
+						entropy_source,
+					)
+					.unwrap();
+				debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+				manager.resolve_htlc(incoming, 0, out, true, BASE_TS).unwrap();
+			}
+		}
+
+		for out in 0..num_channels {
+			for h in 1..=htlcs_per_channel {
+				let incoming = (out + h) % num_channels;
+				if incoming == out {
+					continue;
+				}
+				let outcome = manager
+					.add_htlc(
+						incoming,
+						HTLC_AMT_MSAT,
+						CLTV,
+						out,
+						HTLC_AMT_MSAT - 1,
+						false,
+						out, // unique on this outgoing (different incoming per h)
+						HEIGHT_ADDED,
+						BASE_TS,
+						entropy_source,
+					)
+					.unwrap();
+				debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+			}
+		}
+	}
+
+	#[test]
+	fn memory_footprint() {
+		struct Profile {
+			name: &'static str,
+			num_channels: u64,
+			htlcs_per_channel: u64,
+		}
+
+		let profiles = [
+			Profile { name: "Large", num_channels: 1000, htlcs_per_channel: 20 },
+			Profile { name: "Medium", num_channels: 100, htlcs_per_channel: 10 },
+			Profile { name: "Small", num_channels: 20, htlcs_per_channel: 5 },
+		];
+
+		const MAX_ACCEPTED_HTLCS: u16 = 200;
+		const MAX_IN_FLIGHT_MSAT: u64 = 100_000_000;
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+
+		println!();
+		println!("Static sizes (size_of):");
+		println!("  Channel                  = {} bytes", core::mem::size_of::<Channel>());
+		println!("  PendingHTLC              = {} bytes", core::mem::size_of::<PendingHTLC>());
+		println!("  HtlcRef                  = {} bytes", core::mem::size_of::<HtlcRef>());
+		println!("  GeneralBucket            = {} bytes", core::mem::size_of::<GeneralBucket>());
+		println!("  BucketResources          = {} bytes", core::mem::size_of::<BucketResources>());
+		println!("  DecayingAverage          = {} bytes", core::mem::size_of::<DecayingAverage>());
+		println!(
+			"  AggregatedWindowAverage  = {} bytes",
+			core::mem::size_of::<AggregatedWindowAverage>()
+		);
+		println!();
+		println!(
+			"Heap walk (approximate: capacity()-based, hashbrown overhead modeled as 1 control byte per slot)"
+		);
+		println!(
+			"Excludes allocator/jemalloc rounding (typically adds ~5-15%) and the Mutex/structure stack frames"
+		);
+		println!();
+
+		for profile in profiles {
+			let manager = DefaultResourceManager::new(ResourceManagerConfig::default()).unwrap();
+			populate_symmetric(
+				&manager,
+				profile.num_channels,
+				profile.htlcs_per_channel,
+				MAX_ACCEPTED_HTLCS,
+				MAX_IN_FLIGHT_MSAT,
+				&entropy_source,
+			);
+			let fp = walk_footprint(&manager);
+			let total = fp.total();
+			let total_htlcs = profile.num_channels * profile.htlcs_per_channel;
+
+			println!(
+				"---- {} ({} channels, {} HTLCs/channel, {} total HTLCs) ----",
+				profile.name, profile.num_channels, profile.htlcs_per_channel, total_htlcs
+			);
+			println!("  channels map               : {:>12} bytes", fp.channels_map);
+			println!("  pending_htlcs (sum)        : {:>12} bytes", fp.pending_htlcs);
+			println!("  general slots_occupied     : {:>12} bytes", fp.general_slots_occupied);
+			println!("  general channels_slots map : {:>12} bytes", fp.general_channels_slots);
+			println!("  general inner slot Vecs    : {:>12} bytes", fp.general_inner_slot_vecs);
+			println!("  last_congestion_misuse     : {:>12} bytes", fp.last_congestion_misuse);
+			println!(
+				"  TOTAL                      : {:>12} bytes ({:.2} KiB)",
+				total,
+				total as f64 / 1024.0
+			);
+			println!(
+				"  per channel (effective)    : {:>12} bytes",
+				total / profile.num_channels as usize
+			);
+			if total_htlcs > 0 {
+				println!(
+					"  per pending HTLC (avg)     : {:>12} bytes",
+					fp.pending_htlcs / total_htlcs as usize
+				);
+			}
+			println!();
+		}
+	}
 
 	#[test]
 	fn test_general_bucket_channel_slots_count() {
@@ -1857,7 +2253,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
