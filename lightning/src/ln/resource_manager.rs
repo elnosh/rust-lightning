@@ -209,7 +209,20 @@ impl GeneralBucket {
 		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
 		let channel_entry = match self.channels_slots.entry(outgoing_scid) {
-			Entry::Occupied(e) => e.into_mut(),
+			Entry::Occupied(e) => {
+				let entry = e.into_mut();
+				if entry.0.is_empty() {
+					let slots = assign_slots_for_channel(
+						self.scid,
+						outgoing_scid,
+						entry.1,
+						self.per_channel_slots,
+						self.total_slots,
+					)?;
+					entry.0 = slots;
+				}
+				entry
+			},
 			Entry::Vacant(entry) => {
 				let salt = entropy_source.get_secure_random_bytes();
 				let slots = assign_slots_for_channel(
@@ -631,7 +644,6 @@ impl Writeable for Channel {
 
 impl ReadableArgs<&ResourceManagerConfig> for Channel {
 	fn read<R: Read>(reader: &mut R, config: &ResourceManagerConfig) -> Result<Self, DecodeError> {
-		//let (config, ) = args;
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, max_htlc_value_in_flight_msat, required),
 			(3, max_accepted_htlcs, required),
@@ -660,16 +672,17 @@ impl ReadableArgs<&ResourceManagerConfig> for Channel {
 		)
 		.map_err(|_| DecodeError::InvalidValue)?;
 
+		let slots = Vec::with_capacity(general_bucket.per_channel_slots as usize);
 		for (outgoing_scid, salt) in general_bucket_data.channel_salts {
-			let slots = assign_slots_for_channel(
-				general_bucket.scid,
-				outgoing_scid,
-				salt,
-				general_bucket.per_channel_slots,
-				general_bucket.total_slots,
-			)
-			.map_err(|_| DecodeError::InvalidValue)?;
-			general_bucket.channels_slots.insert(outgoing_scid, (slots, salt));
+			// let slots = assign_slots_for_channel(
+			// 	general_bucket.scid,
+			// 	outgoing_scid,
+			// 	salt,
+			// 	general_bucket.per_channel_slots,
+			// 	general_bucket.total_slots,
+			// )
+			// .map_err(|_| DecodeError::InvalidValue)?;
+			general_bucket.channels_slots.insert(outgoing_scid, (slots.clone(), salt));
 		}
 
 		Ok(Channel {
@@ -1562,6 +1575,81 @@ pub mod benches {
 		});
 	}
 
+	/// Helper for the read benches: build a manager with `num_channels` channels,
+	/// touch every (in, out) pair so `channels_slots` reaches its lifetime O(N^2)
+	/// upper bound, serialize once, then bench reading from those bytes.
+	fn run_read_bench(bench: &mut Criterion, name: &str, num_channels: u64) {
+		use crate::util::ser::{ReadableArgs, Writeable};
+
+		const READ_MAX_ACCEPTED_HTLCS: u16 = 483;
+		const READ_MAX_IN_FLIGHT_MSAT: u64 = 100_000_000;
+
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let manager = DefaultResourceManager::new(ResourceManagerConfig::default()).unwrap();
+		for i in 0..num_channels {
+			manager
+				.add_channel(i, READ_MAX_IN_FLIGHT_MSAT, READ_MAX_ACCEPTED_HTLCS, BASE_TS)
+				.unwrap();
+		}
+		// Full pair warmup: touch every (in, out) pair. Add + resolve so no live HTLCs
+		// remain (those aren't serialized anyway).
+		for incoming in 0..num_channels {
+			for out in 0..num_channels {
+				if incoming == out {
+					continue;
+				}
+				let outcome = manager
+					.add_htlc(
+						incoming,
+						INCOMING_AMT_MSAT,
+						CLTV,
+						out,
+						OUTGOING_AMT_MSAT,
+						false,
+						0,
+						HEIGHT_ADDED,
+						BASE_TS,
+						&entropy_source,
+					)
+					.unwrap();
+				debug_assert!(matches!(outcome, ForwardingOutcome::Forward(_)));
+				manager.resolve_htlc(incoming, 0, out, true, BASE_TS).unwrap();
+			}
+		}
+
+		let mut serialized: Vec<u8> = Vec::new();
+		manager.write(&mut serialized).unwrap();
+
+		bench.bench_function(name, |b| {
+			b.iter(|| {
+				DefaultResourceManager::read(
+					&mut serialized.as_slice(),
+					ResourceManagerConfig::default(),
+				)
+				.unwrap()
+			});
+		});
+	}
+
+	/// Bench: deserialize a `DefaultResourceManager` at the Large profile
+	/// (2000 channels with `channels_slots` at lifetime O(N^2) upper bound). Read
+	/// cost is TLV decode + `assign_slots_for_channel` per persisted salt.
+	pub fn read_resource_manager_large(bench: &mut Criterion) {
+		run_read_bench(bench, "resource_manager_read_large", 2_000);
+	}
+
+	/// Bench: deserialize a `DefaultResourceManager` at the Medium profile
+	/// (100 channels with `channels_slots` at lifetime O(N^2) upper bound).
+	pub fn read_resource_manager_medium(bench: &mut Criterion) {
+		run_read_bench(bench, "resource_manager_read_medium", 100);
+	}
+
+	/// Bench: deserialize a `DefaultResourceManager` at the Small profile
+	/// (20 channels with `channels_slots` at lifetime O(N^2) upper bound).
+	pub fn read_resource_manager_small(bench: &mut Criterion) {
+		run_read_bench(bench, "resource_manager_read_small", 20);
+	}
+
 	/// Bench: isolated cost of `assign_slots_for_channel`.
 	pub fn assign_slots_for_channel_bench(bench: &mut Criterion) {
 		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -1743,7 +1831,7 @@ mod tests {
 		}
 
 		let profiles = [
-			Profile { name: "Large", num_channels: 1000, htlcs_per_channel: 20 },
+			Profile { name: "Large", num_channels: 2000, htlcs_per_channel: 100 },
 			Profile { name: "Medium", num_channels: 100, htlcs_per_channel: 10 },
 			Profile { name: "Small", num_channels: 20, htlcs_per_channel: 5 },
 		];
@@ -2660,7 +2748,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
@@ -3267,6 +3355,9 @@ mod tests {
 			ResourceManagerConfig::default(),
 		)
 		.unwrap();
+
+		add_test_htlc(&deserialized_rm, false, 0, None, &entropy_source).unwrap();
+
 		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
 		assert_eq!(2, deserialized_channels.len());
 

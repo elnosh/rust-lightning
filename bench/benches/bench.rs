@@ -24,6 +24,9 @@ criterion_group!(
 	lightning::ln::resource_manager::benches::assign_slots_for_channel_bench,
 	lightning::ln::resource_manager::benches::replay_pending_htlcs,
 	lightning::ln::resource_manager::benches::build_replay_list,
+	lightning::ln::resource_manager::benches::read_resource_manager_large,
+	lightning::ln::resource_manager::benches::read_resource_manager_medium,
+	lightning::ln::resource_manager::benches::read_resource_manager_small,
 );
 // lightning::ln::channelmanager::bench::bench_sends,
 // lightning_persister::fs_store::bench::bench_sends,
