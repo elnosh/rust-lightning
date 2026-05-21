@@ -1426,6 +1426,142 @@ pub mod benches {
 		});
 	}
 
+	/// Bench: `replay_pending_htlcs` at 2000 channels, 100
+	/// pending HTLCs per outgoing channel, ~200k total replays.
+	pub fn replay_pending_htlcs(bench: &mut Criterion) {
+		use criterion::BatchSize;
+
+		const REPLAY_NUM_CHANNELS: u64 = 2_000;
+		const REPLAY_HTLCS_PER_CHANNEL: u64 = 100;
+		const REPLAY_MAX_ACCEPTED_HTLCS: u16 = 483;
+		const REPLAY_MAX_IN_FLIGHT_MSAT: u64 = 100_000_000;
+
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+
+		let mut replay_list =
+			Vec::with_capacity((REPLAY_NUM_CHANNELS * REPLAY_HTLCS_PER_CHANNEL) as usize);
+		for out in 0..REPLAY_NUM_CHANNELS {
+			for h in 1..=REPLAY_HTLCS_PER_CHANNEL {
+				let incoming = (out + h) % REPLAY_NUM_CHANNELS;
+				replay_list.push(PendingHTLCReplay {
+					incoming_channel_id: incoming,
+					incoming_amount_msat: INCOMING_AMT_MSAT,
+					incoming_htlc_id: 0,
+					incoming_cltv_expiry: CLTV,
+					incoming_accountable: false,
+					outgoing_channel_id: out,
+					outgoing_amount_msat: OUTGOING_AMT_MSAT,
+					added_at_unix_seconds: BASE_TS,
+					height_added: HEIGHT_ADDED,
+				});
+			}
+		}
+
+		let fresh_manager = || {
+			let manager = DefaultResourceManager::new(ResourceManagerConfig::default()).unwrap();
+			for i in 0..REPLAY_NUM_CHANNELS {
+				manager
+					.add_channel(i, REPLAY_MAX_IN_FLIGHT_MSAT, REPLAY_MAX_ACCEPTED_HTLCS, BASE_TS)
+					.unwrap();
+			}
+			manager
+		};
+
+		bench.bench_function("resource_manager_replay_pending_htlcs", |b| {
+			b.iter_batched(
+				fresh_manager,
+				|manager| {
+					manager.replay_pending_htlcs(&replay_list, &entropy_source).unwrap();
+				},
+				BatchSize::PerIteration,
+			);
+		});
+	}
+
+	/// Mock types mirroring the relevant slice of ChannelManager state that the real
+	/// startup code walks to build the `PendingHTLCReplay` list. Keeps the bench
+	/// self-contained (avoids pulling in the full ChannelManager). Iteration shape:
+	/// `per_peer_state` (HashMap) -> peer's `channel_by_id` (HashMap) -> outbound
+	/// HTLCs (Vec).
+	struct MockPrevHop {
+		amount_msat: Option<u64>,
+		cltv_expiry: Option<u32>,
+		htlc_id: u64,
+		prev_outbound_scid_alias: u64,
+		incoming_accountable: bool,
+	}
+	struct MockHtlc {
+		amount_msat: u64,
+		source: MockPrevHop,
+	}
+	struct MockChannel {
+		outbound_scid_alias: u64,
+		htlcs: Vec<MockHtlc>,
+	}
+
+	fn build_mock_peer_state(
+		num_channels: u64, htlcs_per_channel: u64,
+	) -> HashMap<u64, HashMap<u64, MockChannel>> {
+		let mut peer_state: HashMap<u64, HashMap<u64, MockChannel>> = new_hash_map();
+		for ch_id in 0..num_channels {
+			let mut channels = new_hash_map();
+			let htlcs: Vec<MockHtlc> = (0..htlcs_per_channel)
+				.map(|h| MockHtlc {
+					amount_msat: 9_000,
+					source: MockPrevHop {
+						amount_msat: Some(10_000),
+						cltv_expiry: Some(CLTV),
+						htlc_id: 0,
+						prev_outbound_scid_alias: (ch_id + h + 1) % num_channels,
+						incoming_accountable: false,
+					},
+				})
+				.collect();
+			channels.insert(ch_id, MockChannel { outbound_scid_alias: ch_id, htlcs });
+			peer_state.insert(ch_id, channels);
+		}
+		peer_state
+	}
+
+	pub fn build_replay_list(bench: &mut Criterion) {
+		use std::time::SystemTime;
+
+		const NUM_CHANNELS: u64 = 2_000;
+		const HTLCS_PER_CHANNEL: u64 = 100;
+
+		let peer_state = build_mock_peer_state(NUM_CHANNELS, HTLCS_PER_CHANNEL);
+		let best_block_height: u32 = HEIGHT_ADDED;
+
+		bench.bench_function("resource_manager_build_replay_list", |b| {
+			b.iter(|| {
+				let now =
+					SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+				let mut replay_htlcs: Vec<PendingHTLCReplay> = Vec::new();
+				for channels in peer_state.values() {
+					for channel in channels.values() {
+						for htlc in &channel.htlcs {
+							let prev_hop = &htlc.source;
+							if prev_hop.amount_msat.is_some() && prev_hop.cltv_expiry.is_some() {
+								replay_htlcs.push(PendingHTLCReplay {
+									incoming_channel_id: prev_hop.prev_outbound_scid_alias,
+									incoming_amount_msat: prev_hop.amount_msat.unwrap(),
+									incoming_htlc_id: prev_hop.htlc_id,
+									incoming_cltv_expiry: prev_hop.cltv_expiry.unwrap(),
+									incoming_accountable: prev_hop.incoming_accountable,
+									outgoing_channel_id: channel.outbound_scid_alias,
+									outgoing_amount_msat: htlc.amount_msat,
+									added_at_unix_seconds: now,
+									height_added: best_block_height,
+								});
+							}
+						}
+					}
+				}
+				replay_htlcs
+			});
+		});
+	}
+
 	/// Bench: isolated cost of `assign_slots_for_channel`.
 	pub fn assign_slots_for_channel_bench(bench: &mut Criterion) {
 		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -1582,6 +1718,22 @@ mod tests {
 		}
 	}
 
+	fn fmt_bytes(n: usize) -> String {
+		const KIB: f64 = 1024.0;
+		const MIB: f64 = 1024.0 * 1024.0;
+		const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+		let nf = n as f64;
+		if nf >= GIB {
+			format!("{:.2} GiB", nf / GIB)
+		} else if nf >= MIB {
+			format!("{:.2} MiB", nf / MIB)
+		} else if nf >= KIB {
+			format!("{:.2} KiB", nf / KIB)
+		} else {
+			format!("{} B", n)
+		}
+	}
+
 	#[test]
 	fn memory_footprint() {
 		struct Profile {
@@ -1602,22 +1754,24 @@ mod tests {
 
 		println!();
 		println!("Static sizes (size_of):");
-		println!("  Channel                  = {} bytes", core::mem::size_of::<Channel>());
-		println!("  PendingHTLC              = {} bytes", core::mem::size_of::<PendingHTLC>());
-		println!("  HtlcRef                  = {} bytes", core::mem::size_of::<HtlcRef>());
-		println!("  GeneralBucket            = {} bytes", core::mem::size_of::<GeneralBucket>());
-		println!("  BucketResources          = {} bytes", core::mem::size_of::<BucketResources>());
-		println!("  DecayingAverage          = {} bytes", core::mem::size_of::<DecayingAverage>());
+		println!("  Channel                  = {}", fmt_bytes(core::mem::size_of::<Channel>()));
+		println!("  PendingHTLC              = {}", fmt_bytes(core::mem::size_of::<PendingHTLC>()));
+		println!("  HtlcRef                  = {}", fmt_bytes(core::mem::size_of::<HtlcRef>()));
 		println!(
-			"  AggregatedWindowAverage  = {} bytes",
-			core::mem::size_of::<AggregatedWindowAverage>()
-		);
-		println!();
-		println!(
-			"Heap walk (approximate: capacity()-based, hashbrown overhead modeled as 1 control byte per slot)"
+			"  GeneralBucket            = {}",
+			fmt_bytes(core::mem::size_of::<GeneralBucket>())
 		);
 		println!(
-			"Excludes allocator/jemalloc rounding (typically adds ~5-15%) and the Mutex/structure stack frames"
+			"  BucketResources          = {}",
+			fmt_bytes(core::mem::size_of::<BucketResources>())
+		);
+		println!(
+			"  DecayingAverage          = {}",
+			fmt_bytes(core::mem::size_of::<DecayingAverage>())
+		);
+		println!(
+			"  AggregatedWindowAverage  = {}",
+			fmt_bytes(core::mem::size_of::<AggregatedWindowAverage>())
 		);
 		println!();
 
@@ -1635,32 +1789,43 @@ mod tests {
 			let total = fp.total();
 			let total_htlcs = profile.num_channels * profile.htlcs_per_channel;
 
+			let mut serialized = Vec::new();
+			manager.write(&mut serialized).unwrap();
+			let serialized_len = serialized.len();
+
 			println!(
 				"---- {} ({} channels, {} HTLCs/channel, {} total HTLCs) ----",
 				profile.name, profile.num_channels, profile.htlcs_per_channel, total_htlcs
 			);
-			println!("  channels map               : {:>12} bytes", fp.channels_map);
-			println!("  pending_htlcs (sum)        : {:>12} bytes", fp.pending_htlcs);
-			println!("  general slots_occupied     : {:>12} bytes", fp.general_slots_occupied);
-			println!("  general channels_slots map : {:>12} bytes", fp.general_channels_slots);
-			println!("  general inner slot Vecs    : {:>12} bytes", fp.general_inner_slot_vecs);
-			println!("  last_congestion_misuse     : {:>12} bytes", fp.last_congestion_misuse);
+			println!("  channels map               : {:>12}", fmt_bytes(fp.channels_map));
+			println!("  pending_htlcs (sum)        : {:>12}", fmt_bytes(fp.pending_htlcs));
+			println!("  general slots_occupied     : {:>12}", fmt_bytes(fp.general_slots_occupied));
+			println!("  general channels_slots map : {:>12}", fmt_bytes(fp.general_channels_slots));
 			println!(
-				"  TOTAL                      : {:>12} bytes ({:.2} KiB)",
-				total,
-				total as f64 / 1024.0
+				"  general inner slot Vecs    : {:>12}",
+				fmt_bytes(fp.general_inner_slot_vecs)
 			);
+			println!("  last_congestion_misuse     : {:>12}", fmt_bytes(fp.last_congestion_misuse));
+			println!("  TOTAL (in-memory)          : {:>12}", fmt_bytes(total));
 			println!(
-				"  per channel (effective)    : {:>12} bytes",
-				total / profile.num_channels as usize
+				"  per channel (effective)    : {:>12}",
+				fmt_bytes(total / profile.num_channels as usize)
 			);
 			if total_htlcs > 0 {
 				println!(
-					"  per pending HTLC (avg)     : {:>12} bytes",
-					fp.pending_htlcs / total_htlcs as usize
+					"  per pending HTLC (avg)     : {:>12}",
+					fmt_bytes(fp.pending_htlcs / total_htlcs as usize)
 				);
 			}
-			println!();
+			println!(
+				"  SERIALIZED        : {:>12} ({:.1}% of in-memory)",
+				fmt_bytes(serialized_len),
+				100.0 * serialized_len as f64 / total as f64,
+			);
+			println!(
+				"  serialized per channel     : {:>12}",
+				fmt_bytes(serialized_len / profile.num_channels as usize)
+			);
 		}
 	}
 
