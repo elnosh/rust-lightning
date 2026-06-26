@@ -12,10 +12,7 @@
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use core::time::Duration;
 
-use crate::{
-	crypto::chacha20::ChaCha20,
-	prelude::{hash_map::Entry, new_hash_map, HashMap, Vec},
-};
+use crate::{crypto::chacha20::ChaCha20, prelude::Vec};
 
 /// The minimum number of slots required for the general bucket to function.
 const MIN_GENERAL_BUCKET_SLOTS: u16 = 5;
@@ -33,13 +30,8 @@ struct GeneralBucket {
 	/// gets.
 	per_slot_msat: u64,
 
-	/// Tracks the occupancy of HTLC slots in the bucket where the index represents the slot
-	/// number and the optional value indicates which channel is currently using the slot.
-	slots_occupied: Vec<Option<u64>>,
-
-	/// SCID -> slots assigned
-	/// Maps short channel IDs to the slots that the channel is allowed to use.
-	channels_slots: HashMap<u64, Vec<u16>>,
+	/// Tracks the occupancy of each HTLC slot in the bucket.
+	slots_occupied: Vec<bool>,
 }
 
 impl GeneralBucket {
@@ -65,44 +57,43 @@ impl GeneralBucket {
 			total_liquidity: liquidity_allocated,
 			per_channel_slots,
 			per_slot_msat,
-			slots_occupied: vec![None; slots_allocated as usize],
-			channels_slots: new_hash_map(),
+			slots_occupied: vec![false; slots_allocated as usize],
 		})
 	}
 
-	/// Returns the available slots that could be used by the outgoing scid for the specified
-	/// htlc amount.
-	fn slots_for_amount(
-		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, node_salt: &[u8; 32],
+	fn is_slot_occupied(&self, idx: u16) -> bool {
+		self.slots_occupied[idx as usize]
+	}
+
+	/// Marks the given slot indices as occupied (or frees them) in the bucket-wide occupancy
+	/// tracking.
+	fn set_slots_occupied(&mut self, slots: &[u16], occupied: bool) {
+		for &idx in slots {
+			debug_assert_eq!(self.slots_occupied[idx as usize], !occupied);
+			self.slots_occupied[idx as usize] = occupied;
+		}
+	}
+
+	/// Returns the available slots that could be used by the outgoing scid for the specified htlc
+	/// amount, or None if not enough of its assigned slots are currently free.
+	fn available_slots(
+		&self, outgoing_scid: u64, htlc_amount_msat: u64, node_salt: &[u8; 32],
 	) -> Result<Option<Vec<u16>>, ()> {
 		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
-		let channel_slots = match self.channels_slots.entry(outgoing_scid) {
-			Entry::Occupied(e) => e.into_mut(),
-			Entry::Vacant(entry) => {
-				let salt = derive_channel_salt(node_salt, outgoing_scid);
-				let slots = assign_slots_for_channel(
-					self.scid,
-					outgoing_scid,
-					salt,
-					self.per_channel_slots,
-					self.total_slots,
-				)?;
-				entry.insert(slots)
-			},
-		};
+		let salt = derive_channel_salt(node_salt, outgoing_scid);
+		let channel_slots = assign_slots_for_channel(
+			self.scid,
+			outgoing_scid,
+			salt,
+			self.per_channel_slots,
+			self.total_slots,
+		)?;
 
 		let slots_to_use: Vec<u16> = channel_slots
-			.iter()
-			.filter(|idx| match self.slots_occupied.get(**idx as usize) {
-				Some(is_occupied) => is_occupied.is_none(),
-				None => {
-					debug_assert!(false, "assigned slot {} is not present in slots_occupied", idx);
-					false
-				},
-			})
+			.into_iter()
+			.filter(|idx| !self.is_slot_occupied(*idx))
 			.take(slots_needed as usize)
-			.copied()
 			.collect();
 
 		if (slots_to_use.len() as u64) < slots_needed {
@@ -112,61 +103,16 @@ impl GeneralBucket {
 		}
 	}
 
-	fn can_add_htlc(
-		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, node_salt: &[u8; 32],
-	) -> Result<bool, ()> {
-		Ok(self.slots_for_amount(outgoing_scid, htlc_amount_msat, node_salt)?.is_some())
+	/// Marks the given slots as occupied. The slots must have been obtained from
+	/// [`Self::available_slots`] and confirmed to be free.
+	fn add_htlc(&mut self, slots: &[u16]) {
+		self.set_slots_occupied(slots, true);
 	}
 
-	fn add_htlc(
-		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, node_salt: &[u8; 32],
-	) -> Result<Vec<u16>, ()> {
-		match self.slots_for_amount(outgoing_scid, htlc_amount_msat, node_salt)? {
-			Some(slots) => {
-				for slot_idx in &slots {
-					debug_assert!(self.slots_occupied[*slot_idx as usize].is_none());
-					self.slots_occupied[*slot_idx as usize] = Some(outgoing_scid);
-				}
-				Ok(slots)
-			},
-			None => Err(()),
-		}
-	}
-
-	fn remove_htlc(&mut self, outgoing_scid: u64, htlc_amount_msat: u64) -> Result<(), ()> {
-		let channel_slots = self.channels_slots.get(&outgoing_scid).ok_or(())?;
-		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
-		let slots_used_by_channel = channel_slots
-			.iter()
-			.filter(|slot_idx| self.slots_occupied[**slot_idx as usize] == Some(outgoing_scid))
-			.count();
-
-		if slots_needed > slots_used_by_channel as u64 {
-			return Err(());
-		}
-
-		let mut released = 0;
-		for slot_idx in channel_slots {
-			if released == slots_needed {
-				break;
-			}
-			if self.slots_occupied[*slot_idx as usize] == Some(outgoing_scid) {
-				self.slots_occupied[*slot_idx as usize] = None;
-				released += 1;
-			}
-		}
-
-		Ok(())
-	}
-
-	fn remove_channel_slots(&mut self, outgoing_scid: u64) {
-		if let Some(slots) = self.channels_slots.remove(&outgoing_scid) {
-			for slot_idx in slots {
-				if self.slots_occupied[slot_idx as usize] == Some(outgoing_scid) {
-					self.slots_occupied[slot_idx as usize] = None;
-				}
-			}
-		}
+	/// Frees the given slots, which must be exactly the slots the HTLC being removed previously
+	/// occupied (as recorded in its [`PendingHTLC`]).
+	fn remove_htlc(&mut self, slots: &[u16]) {
+		self.set_slots_occupied(slots, false);
 	}
 }
 
@@ -370,7 +316,8 @@ mod tests {
 
 			assert_eq!(general_bucket.per_channel_slots, case.expected_slots);
 			assert_eq!(general_bucket.per_slot_msat, case.expected_liquidity);
-			assert!(general_bucket.slots_occupied.iter().all(|slot| slot.is_none()));
+			assert_eq!(general_bucket.slots_occupied.len(), case.general_slots as usize);
+			assert!(general_bucket.slots_occupied.iter().all(|occupied| !occupied));
 
 			let salt = entropy_source.get_secure_random_bytes();
 			let slots = assign_slots_for_channel(
@@ -396,6 +343,14 @@ mod tests {
 		assert!(GeneralBucket::new(0, 100, 19).is_err());
 	}
 
+	fn general_add(
+		general_bucket: &mut GeneralBucket, scid: u64, htlc_amount_msat: u64, node_salt: &[u8; 32],
+	) -> Result<Vec<u16>, ()> {
+		let slots = general_bucket.available_slots(scid, htlc_amount_msat, node_salt)?.ok_or(())?;
+		general_bucket.add_htlc(&slots);
+		Ok(slots)
+	}
+
 	#[test]
 	fn test_general_bucket_add_htlc_over_max_liquidity() {
 		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
@@ -407,15 +362,11 @@ mod tests {
 		let scid = 21;
 		let htlc_amount_over_max = 3000;
 		// General bucket will assign 5 slots of 500 per channel. Max 5 * 500 = 2500
-		// Adding an HTLC over the amount should return error.
-		let add_htlc_res = general_bucket.add_htlc(scid, htlc_amount_over_max, &node_salt);
-		assert!(add_htlc_res.is_err());
+		// An HTLC over the amount cannot find enough free slots.
+		assert!(general_add(&mut general_bucket, scid, htlc_amount_over_max, &node_salt).is_err());
 
-		// All slots for the channel should be unoccupied since adding the HTLC failed.
-		let slots = general_bucket.channels_slots.get(&scid).unwrap();
-		assert!(slots
-			.iter()
-			.all(|slot_idx| general_bucket.slots_occupied[*slot_idx as usize].is_none()));
+		// No slots should be occupied since the HTLC was not added.
+		assert!(general_bucket.slots_occupied.iter().all(|occupied| !occupied));
 	}
 
 	#[test]
@@ -429,33 +380,23 @@ mod tests {
 
 		let scid = 21;
 		// HTLC of 500 should take one slot
-		let add_htlc_res = general_bucket.add_htlc(scid, 500, &node_salt);
-		assert!(add_htlc_res.is_ok());
-		let slots_occupied = add_htlc_res.unwrap();
-		assert_eq!(slots_occupied.len(), 1);
-
-		let slot_occupied = slots_occupied[0];
-		assert_eq!(general_bucket.slots_occupied[slot_occupied as usize], Some(scid));
+		let slots = general_add(&mut general_bucket, scid, 500, &node_salt).unwrap();
+		assert_eq!(slots.len(), 1);
+		assert!(general_bucket.is_slot_occupied(slots[0]));
 
 		// HTLC of 1200 should take 3 general slots
-		let add_htlc_res = general_bucket.add_htlc(scid, 1200, &node_salt);
-		assert!(add_htlc_res.is_ok());
-		let slots_occupied = add_htlc_res.unwrap();
-		assert_eq!(slots_occupied.len(), 3);
-
-		for slot_occupied in slots_occupied.iter() {
-			assert_eq!(general_bucket.slots_occupied[*slot_occupied as usize], Some(scid));
+		let slots = general_add(&mut general_bucket, scid, 1200, &node_salt).unwrap();
+		assert_eq!(slots.len(), 3);
+		for slot in slots.iter() {
+			assert!(general_bucket.is_slot_occupied(*slot));
 		}
 
 		// 4 slots have been taken. Trying to add HTLC that will take 2 or more slots should fail
 		// now.
-		assert!(general_bucket.add_htlc(scid, 501, &node_salt).is_err());
-		let channel_slots = general_bucket.channels_slots.get(&scid).unwrap();
-		let unoccupied_slots_for_channel: Vec<&u16> = channel_slots
-			.iter()
-			.filter(|slot_idx| general_bucket.slots_occupied[**slot_idx as usize].is_none())
-			.collect();
-		assert_eq!(unoccupied_slots_for_channel.len(), 1);
+		assert!(general_add(&mut general_bucket, scid, 501, &node_salt).is_err());
+		// Exactly one of the channel's assigned slots remains free.
+		let free = general_bucket.available_slots(scid, 500, &node_salt).unwrap();
+		assert_eq!(free.unwrap().len(), 1);
 	}
 
 	#[test]
@@ -466,16 +407,13 @@ mod tests {
 
 		let scid = 21;
 		let htlc_amount = 400;
-		let slots_occupied = general_bucket.add_htlc(scid, htlc_amount, &node_salt).unwrap();
-		assert_eq!(slots_occupied.len(), 1);
-		let slot_occupied = slots_occupied[0];
-		assert_eq!(general_bucket.slots_occupied[slot_occupied as usize], Some(scid));
+		let slots = general_add(&mut general_bucket, scid, htlc_amount, &node_salt).unwrap();
+		assert_eq!(slots.len(), 1);
+		let slot_occupied = slots[0];
+		assert!(general_bucket.is_slot_occupied(slot_occupied));
 
-		// Trying to remove HTLC over number of slots previously used should result in a error
-		assert!(general_bucket.remove_htlc(scid, htlc_amount + 400).is_err());
-		assert!(general_bucket.remove_htlc(scid, htlc_amount).is_ok());
-
-		assert!(general_bucket.slots_occupied[slot_occupied as usize].is_none());
+		general_bucket.remove_htlc(&slots);
+		assert!(!general_bucket.is_slot_occupied(slot_occupied));
 	}
 
 	#[test]
