@@ -2193,6 +2193,66 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 	/// Handle an incoming `channel_update` message from the given peer.
 	fn handle_channel_update(&self, their_node_id: PublicKey, msg: &ChannelUpdate);
 
+	// Eltoo channels (all methods default to dropping the message, matching the
+	// ignore-unknown-odd-type behavior for handlers without eltoo support):
+	/// Handle an incoming `open_channel_eltoo` message from the given peer.
+	fn handle_open_channel_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::OpenChannelEltoo,
+	) {
+	}
+	/// Handle an incoming `accept_channel_eltoo` message from the given peer.
+	fn handle_accept_channel_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::AcceptChannelEltoo,
+	) {
+	}
+	/// Handle an incoming `funding_created_eltoo` message from the given peer.
+	fn handle_funding_created_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::FundingCreatedEltoo,
+	) {
+	}
+	/// Handle an incoming `funding_signed_eltoo` message from the given peer.
+	fn handle_funding_signed_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::FundingSignedEltoo,
+	) {
+	}
+	/// Handle an incoming `channel_ready_eltoo` message from the given peer.
+	fn handle_channel_ready_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::ChannelReadyEltoo,
+	) {
+	}
+	/// Handle an incoming `shutdown_eltoo` message from the given peer.
+	fn handle_shutdown_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::ShutdownEltoo,
+	) {
+	}
+	/// Handle an incoming `closing_signed_eltoo` message from the given peer.
+	fn handle_closing_signed_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::ClosingSignedEltoo,
+	) {
+	}
+	/// Handle an incoming `update_signed` message from the given peer.
+	fn handle_update_signed(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::UpdateSigned,
+	) {
+	}
+	/// Handle an incoming `update_signed_ack` message from the given peer.
+	fn handle_update_signed_ack(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::UpdateSignedAck,
+	) {
+	}
+	/// Handle an incoming `channel_reestablish_eltoo` message from the given peer.
+	fn handle_channel_reestablish_eltoo(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::ChannelReestablishEltoo,
+	) {
+	}
+	/// Handle an incoming `update_noop` message from the given peer.
+	fn handle_update_noop(
+		&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::UpdateNoop,
+	) {
+	}
+	/// Handle an incoming `yield` message from the given peer.
+	fn handle_yield(&self, _their_node_id: PublicKey, _msg: &crate::ln::eltoo::msgs::Yield) {}
+
 	// Error:
 	/// Handle an incoming `error` message from the given peer.
 	fn handle_error(&self, their_node_id: PublicKey, msg: &ErrorMessage);

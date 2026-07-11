@@ -2528,6 +2528,49 @@ impl<
 				self.message_handler.chan_handler.handle_channel_reestablish(their_node_id, &msg);
 			},
 
+			// Eltoo channel messages:
+			Message::OpenChannelEltoo(msg) => {
+				self.message_handler.chan_handler.handle_open_channel_eltoo(their_node_id, &msg);
+			},
+			Message::AcceptChannelEltoo(msg) => {
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_accept_channel_eltoo(their_node_id, &msg);
+			},
+			Message::FundingCreatedEltoo(msg) => {
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_funding_created_eltoo(their_node_id, &msg);
+			},
+			Message::FundingSignedEltoo(msg) => {
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_funding_signed_eltoo(their_node_id, &msg);
+			},
+			Message::ChannelReadyEltoo(msg) => {
+				self.message_handler.chan_handler.handle_channel_ready_eltoo(their_node_id, &msg);
+			},
+			Message::ShutdownEltoo(msg) => {
+				self.message_handler.chan_handler.handle_shutdown_eltoo(their_node_id, &msg);
+			},
+			Message::ClosingSignedEltoo(msg) => {
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_closing_signed_eltoo(their_node_id, &msg);
+			},
+			Message::UpdateSigned(msg) => {
+				self.message_handler.chan_handler.handle_update_signed(their_node_id, &msg);
+			},
+			Message::UpdateSignedAck(msg) => {
+				self.message_handler.chan_handler.handle_update_signed_ack(their_node_id, &msg);
+			},
+			Message::ChannelReestablishEltoo(msg) => {
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_channel_reestablish_eltoo(their_node_id, &msg);
+			},
+			Message::UpdateNoop(msg) => {
+				self.message_handler.chan_handler.handle_update_noop(their_node_id, &msg);
+			},
+			Message::Yield(msg) => {
+				self.message_handler.chan_handler.handle_yield(their_node_id, &msg);
+			},
+
 			// Routing messages:
 			Message::AnnouncementSignatures(msg) => {
 				let chan_handler = &self.message_handler.chan_handler;

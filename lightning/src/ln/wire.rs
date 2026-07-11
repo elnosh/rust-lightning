@@ -102,6 +102,18 @@ pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	RevokeAndACK(msgs::RevokeAndACK),
 	UpdateFee(msgs::UpdateFee),
 	ChannelReestablish(msgs::ChannelReestablish),
+	OpenChannelEltoo(crate::ln::eltoo::msgs::OpenChannelEltoo),
+	AcceptChannelEltoo(crate::ln::eltoo::msgs::AcceptChannelEltoo),
+	FundingCreatedEltoo(crate::ln::eltoo::msgs::FundingCreatedEltoo),
+	FundingSignedEltoo(crate::ln::eltoo::msgs::FundingSignedEltoo),
+	ChannelReadyEltoo(crate::ln::eltoo::msgs::ChannelReadyEltoo),
+	ShutdownEltoo(crate::ln::eltoo::msgs::ShutdownEltoo),
+	ClosingSignedEltoo(crate::ln::eltoo::msgs::ClosingSignedEltoo),
+	UpdateSigned(crate::ln::eltoo::msgs::UpdateSigned),
+	UpdateSignedAck(crate::ln::eltoo::msgs::UpdateSignedAck),
+	ChannelReestablishEltoo(crate::ln::eltoo::msgs::ChannelReestablishEltoo),
+	UpdateNoop(crate::ln::eltoo::msgs::UpdateNoop),
+	Yield(crate::ln::eltoo::msgs::Yield),
 	AnnouncementSignatures(msgs::AnnouncementSignatures),
 	ChannelAnnouncement(msgs::ChannelAnnouncement),
 	NodeAnnouncement(msgs::NodeAnnouncement),
@@ -164,6 +176,18 @@ impl<T: core::fmt::Debug + Type + TestEq> Writeable for Message<T> {
 			&Message::RevokeAndACK(ref msg) => msg.write(writer),
 			&Message::UpdateFee(ref msg) => msg.write(writer),
 			&Message::ChannelReestablish(ref msg) => msg.write(writer),
+			&Message::OpenChannelEltoo(ref msg) => msg.write(writer),
+			&Message::AcceptChannelEltoo(ref msg) => msg.write(writer),
+			&Message::FundingCreatedEltoo(ref msg) => msg.write(writer),
+			&Message::FundingSignedEltoo(ref msg) => msg.write(writer),
+			&Message::ChannelReadyEltoo(ref msg) => msg.write(writer),
+			&Message::ShutdownEltoo(ref msg) => msg.write(writer),
+			&Message::ClosingSignedEltoo(ref msg) => msg.write(writer),
+			&Message::UpdateSigned(ref msg) => msg.write(writer),
+			&Message::UpdateSignedAck(ref msg) => msg.write(writer),
+			&Message::ChannelReestablishEltoo(ref msg) => msg.write(writer),
+			&Message::UpdateNoop(ref msg) => msg.write(writer),
+			&Message::Yield(ref msg) => msg.write(writer),
 			&Message::AnnouncementSignatures(ref msg) => msg.write(writer),
 			&Message::ChannelAnnouncement(ref msg) => msg.write(writer),
 			&Message::NodeAnnouncement(ref msg) => msg.write(writer),
@@ -226,6 +250,18 @@ impl<T: core::fmt::Debug + Type + TestEq> Type for Message<T> {
 			&Message::RevokeAndACK(ref msg) => msg.type_id(),
 			&Message::UpdateFee(ref msg) => msg.type_id(),
 			&Message::ChannelReestablish(ref msg) => msg.type_id(),
+			&Message::OpenChannelEltoo(ref msg) => msg.type_id(),
+			&Message::AcceptChannelEltoo(ref msg) => msg.type_id(),
+			&Message::FundingCreatedEltoo(ref msg) => msg.type_id(),
+			&Message::FundingSignedEltoo(ref msg) => msg.type_id(),
+			&Message::ChannelReadyEltoo(ref msg) => msg.type_id(),
+			&Message::ShutdownEltoo(ref msg) => msg.type_id(),
+			&Message::ClosingSignedEltoo(ref msg) => msg.type_id(),
+			&Message::UpdateSigned(ref msg) => msg.type_id(),
+			&Message::UpdateSignedAck(ref msg) => msg.type_id(),
+			&Message::ChannelReestablishEltoo(ref msg) => msg.type_id(),
+			&Message::UpdateNoop(ref msg) => msg.type_id(),
+			&Message::Yield(ref msg) => msg.type_id(),
 			&Message::AnnouncementSignatures(ref msg) => msg.type_id(),
 			&Message::ChannelAnnouncement(ref msg) => msg.type_id(),
 			&Message::NodeAnnouncement(ref msg) => msg.type_id(),
@@ -392,6 +428,44 @@ where
 		},
 		msgs::UpdateFee::TYPE => {
 			Ok(Message::UpdateFee(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::OpenChannelEltoo::TYPE => {
+			Ok(Message::OpenChannelEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::AcceptChannelEltoo::TYPE => {
+			Ok(Message::AcceptChannelEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::FundingCreatedEltoo::TYPE => {
+			Ok(Message::FundingCreatedEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::FundingSignedEltoo::TYPE => {
+			Ok(Message::FundingSignedEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::ChannelReadyEltoo::TYPE => {
+			Ok(Message::ChannelReadyEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::ShutdownEltoo::TYPE => {
+			Ok(Message::ShutdownEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::ClosingSignedEltoo::TYPE => {
+			Ok(Message::ClosingSignedEltoo(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::UpdateSigned::TYPE => {
+			Ok(Message::UpdateSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::UpdateSignedAck::TYPE => {
+			Ok(Message::UpdateSignedAck(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::ChannelReestablishEltoo::TYPE => {
+			Ok(Message::ChannelReestablishEltoo(LengthReadable::read_from_fixed_length_buffer(
+				buffer,
+			)?))
+		},
+		crate::ln::eltoo::msgs::UpdateNoop::TYPE => {
+			Ok(Message::UpdateNoop(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		crate::ln::eltoo::msgs::Yield::TYPE => {
+			Ok(Message::Yield(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ChannelReestablish::TYPE => {
 			Ok(Message::ChannelReestablish(LengthReadable::read_from_fixed_length_buffer(buffer)?))
@@ -643,6 +717,53 @@ impl Encode for msgs::ChannelReestablish {
 	const TYPE: u16 = 136;
 }
 
+impl Encode for crate::ln::eltoo::msgs::OpenChannelEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::OPEN_CHANNEL_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::AcceptChannelEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::ACCEPT_CHANNEL_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::FundingCreatedEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::FUNDING_CREATED_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::FundingSignedEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::FUNDING_SIGNED_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::ChannelReadyEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::CHANNEL_READY_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::ShutdownEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::SHUTDOWN_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::ClosingSignedEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::CLOSING_SIGNED_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::UpdateSigned {
+	const TYPE: u16 = crate::ln::eltoo::msgs::UPDATE_SIGNED_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::UpdateSignedAck {
+	const TYPE: u16 = crate::ln::eltoo::msgs::UPDATE_SIGNED_ACK_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::ChannelReestablishEltoo {
+	const TYPE: u16 = crate::ln::eltoo::msgs::CHANNEL_REESTABLISH_ELTOO_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::UpdateNoop {
+	const TYPE: u16 = crate::ln::eltoo::msgs::UPDATE_NOOP_TYPE;
+}
+
+impl Encode for crate::ln::eltoo::msgs::Yield {
+	const TYPE: u16 = crate::ln::eltoo::msgs::YIELD_TYPE;
+}
 impl Encode for msgs::AnnouncementSignatures {
 	const TYPE: u16 = 259;
 }
@@ -729,6 +850,39 @@ mod tests {
 		match message {
 			Message::Unknown(::core::u16::MAX) => (),
 			_ => panic!("Expected message type {}; found: {}", ::core::u16::MAX, message.type_id()),
+		}
+	}
+
+	#[test]
+	fn read_eltoo_messages() {
+		// The eltoo message set is registered with the wire layer: a raw
+		// [type || body] buffer decodes to the right variant and re-encodes
+		// identically.
+		use crate::ln::eltoo::msgs as eltoo_msgs;
+		use crate::sign::eltoo::musig::{MusigPartialSig, MusigPubNonce};
+		let msg = eltoo_msgs::UpdateSigned {
+			channel_id: crate::ln::types::ChannelId::from_bytes([0x33; 32]),
+			update_psig: MusigPartialSig([0x44; 32]),
+			next_nonce: MusigPubNonce([0x55; 66]),
+		};
+		let mut buffer = Vec::new();
+		buffer.extend_from_slice(&eltoo_msgs::UpdateSigned::TYPE.to_be_bytes());
+		buffer.extend_from_slice(&msg.encode());
+		let decoded = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
+		assert_eq!(decoded.type_id(), 32775);
+		match decoded {
+			Message::UpdateSigned(decoded_msg) => assert_eq!(decoded_msg, msg),
+			_ => panic!("wrong variant"),
+		}
+
+		let yield_msg =
+			eltoo_msgs::Yield { channel_id: crate::ln::types::ChannelId::from_bytes([0x34; 32]) };
+		let mut buffer = Vec::new();
+		buffer.extend_from_slice(&eltoo_msgs::Yield::TYPE.to_be_bytes());
+		buffer.extend_from_slice(&yield_msg.encode());
+		match read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap() {
+			Message::Yield(decoded_msg) => assert_eq!(decoded_msg, yield_msg),
+			_ => panic!("wrong variant"),
 		}
 	}
 
