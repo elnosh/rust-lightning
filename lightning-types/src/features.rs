@@ -164,7 +164,7 @@ mod sealed {
 			// Byte 5
 			AnchorZeroFeeCommitments | ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
-			ZeroConf,
+			ZeroConf | Eltoo,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
 			// Byte 8 - 18
@@ -189,7 +189,7 @@ mod sealed {
 			// Byte 5
 			AnchorZeroFeeCommitments | ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
-			ZeroConf | Keysend,
+			ZeroConf | Keysend | Eltoo,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
 			// Byte 8 - 18
@@ -658,6 +658,17 @@ mod sealed {
 		clear_zero_conf,
 		supports_zero_conf,
 		requires_zero_conf
+	);
+	define_feature!(
+		53,
+		Eltoo,
+		[InitContext, NodeContext],
+		"Feature flags for eltoo (LN-Symmetry) channels over BIP-448. Called `option_eltoo` in the eltoo BOLT draft",
+		set_eltoo_optional,
+		set_eltoo_required,
+		clear_eltoo,
+		supports_eltoo,
+		requires_eltoo
 	);
 	define_feature!(
 		55,

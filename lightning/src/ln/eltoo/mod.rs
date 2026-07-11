@@ -32,6 +32,7 @@
 //! [`eltoo::channel`]: self
 //! [`eltoo::monitor`]: self
 
+pub mod msgs;
 pub mod tx;
 
 #[cfg(test)]
