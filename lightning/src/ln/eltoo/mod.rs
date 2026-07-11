@@ -33,6 +33,7 @@
 //! [`eltoo::monitor`]: self
 
 pub mod channel;
+pub mod monitor;
 pub mod msgs;
 pub mod tx;
 

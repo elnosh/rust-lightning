@@ -199,6 +199,25 @@ impl SignedState {
 	fn state_number(&self) -> u64 {
 		self.desc.state
 	}
+
+	/// Converts to the monitor's persisted representation.
+	pub fn to_monitor_state(&self) -> crate::ln::eltoo::monitor::MonitorState {
+		crate::ln::eltoo::monitor::MonitorState {
+			desc: self.desc.clone(),
+			htlcs: self
+				.htlcs
+				.iter()
+				.map(|htlc| crate::ln::eltoo::monitor::MonitorHtlc {
+					offered_by_us: htlc.offered_by_us,
+					amount_msat: htlc.amount_msat,
+					cltv_expiry: htlc.cltv_expiry,
+					payment_hash: htlc.payment_hash,
+				})
+				.collect(),
+			built: self.built.clone(),
+			agg_sig: self.agg_sig,
+		}
+	}
 }
 
 /// The result of a state advancing (a fully-signed new state replacing the old tip),
@@ -465,6 +484,16 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 	/// The channel's static transaction parameters, once keys are exchanged.
 	pub fn channel_params(&self) -> Option<&EltooChannelParams> {
 		self.channel_params.as_ref()
+	}
+
+	/// The funding outpoint and output, once negotiated.
+	pub fn funding(&self) -> Option<&(OutPoint, TxOut)> {
+		self.funding.as_ref()
+	}
+
+	/// The state we committed to but the peer has not yet acked, if any.
+	pub fn pending_state(&self) -> Option<&SignedState> {
+		self.pending_commit.as_ref()
 	}
 
 	// ===== Establishment =====
