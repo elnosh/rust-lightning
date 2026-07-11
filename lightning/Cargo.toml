@@ -40,6 +40,10 @@ lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bech32 = { version = "0.11.0", default-features = false }
 bitcoin = { version = "0.32.4", default-features = false, features = ["secp-recovery"] }
+# MuSig2 for eltoo channels (research PoC): the `bitcoin` dep pins secp256k1 0.29 which
+# lacks the musig module. Both secp256k1-sys versions coexist via versioned symbols.
+# NOTE: this makes no-std builds unsupported on the eltoo research branch.
+secp256k1-musig = { package = "secp256k1", version = "0.32.0-beta.2", default-features = false, features = ["std"] }
 chacha20-poly1305 = { version = "0.2.0", default-features = false }
 
 dnssec-prover = { version = "0.6", default-features = false }

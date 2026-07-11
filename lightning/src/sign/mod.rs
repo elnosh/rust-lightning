@@ -70,6 +70,7 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod ecdsa;
+pub mod eltoo;
 pub mod tx_builder;
 
 pub(crate) const COMPRESSED_PUBLIC_KEY_SIZE: usize = bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;

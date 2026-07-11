@@ -17,6 +17,7 @@ pub mod chan_utils;
 pub mod channel_keys;
 pub mod channel_state;
 pub mod channelmanager;
+pub mod eltoo;
 mod features;
 pub mod funding;
 pub mod inbound_payment;
