@@ -33,9 +33,13 @@
 //! [`eltoo::monitor`]: self
 
 pub mod channel;
+pub mod channelmanager;
 pub mod monitor;
 pub mod msgs;
 pub mod tx;
+
+#[cfg(test)]
+mod functional_tests;
 
 #[cfg(test)]
 mod bip446_test_vectors;

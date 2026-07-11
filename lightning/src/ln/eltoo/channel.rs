@@ -496,6 +496,16 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 		self.pending_commit.as_ref()
 	}
 
+	/// The signer's key-derivation id (to re-derive a signer for the monitor).
+	pub fn signer_keys_id(&self) -> [u8; 32] {
+		self.signer.channel_keys_id()
+	}
+
+	/// The counterparty's funding pubkey, once keys are exchanged.
+	pub fn counterparty_funding_pubkey(&self) -> PublicKey {
+		self.counterparty_pubkeys.as_ref().expect("keys exchanged").funding_pubkey
+	}
+
 	// ===== Establishment =====
 
 	/// Produces the `open_channel_eltoo` message (initiator only).
