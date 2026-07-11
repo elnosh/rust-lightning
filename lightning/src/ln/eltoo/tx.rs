@@ -611,6 +611,33 @@ pub fn rebind(built: &mut BuiltState, new_prevout: OutPoint) {
 		OutPoint { txid: built.update_tx.compute_txid(), vout: UPDATE_STATE_OUTPUT_INDEX };
 }
 
+/// Builds the cooperative closing transaction: a keyspend of the funding output paying
+/// each party's (non-dust) balance to its shutdown script. On-chain it is
+/// indistinguishable from a single-key wallet spend.
+///
+/// Outputs below the static dust limit are omitted (their value goes to fees).
+pub fn build_closing_tx(
+	funding_outpoint: OutPoint, mut outputs: Vec<(ScriptBuf, u64)>,
+) -> Transaction {
+	let mut tx_outputs: Vec<TxOut> = outputs
+		.drain(..)
+		.filter(|(_, sat)| *sat >= ELTOO_DUST_LIMIT_SATOSHIS)
+		.map(|(script_pubkey, sat)| TxOut { value: Amount::from_sat(sat), script_pubkey })
+		.collect();
+	tx_outputs.sort_by(bip69_output_cmp);
+	Transaction {
+		version: Version::non_standard(3),
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn {
+			previous_output: funding_outpoint,
+			script_sig: ScriptBuf::new(),
+			sequence: Sequence::MAX,
+			witness: Witness::new(),
+		}],
+		output: tx_outputs,
+	}
+}
+
 /// Extracts the settlement tapleaf hash published in a confirmed update transaction's
 /// OP_RETURN output, if the transaction has the expected shape.
 pub fn settle_leaf_hash_from_update_tx(tx: &Transaction) -> Option<[u8; 32]> {
@@ -823,9 +850,9 @@ mod tests {
 		// Both peers MuSig2-sign the update template hash, exactly as
 		// funding_created_eltoo/update_signed would.
 		let (sec_nonce_a, pub_nonce_a) =
-			musig::generate_nonce_pair(&keys, &secret_keys[0], &public_keys[0], [0xaa; 32]);
+			musig::generate_nonce_pair(Some(&keys), &secret_keys[0], &public_keys[0], [0xaa; 32]);
 		let (sec_nonce_b, pub_nonce_b) =
-			musig::generate_nonce_pair(&keys, &secret_keys[1], &public_keys[1], [0xbb; 32]);
+			musig::generate_nonce_pair(Some(&keys), &secret_keys[1], &public_keys[1], [0xbb; 32]);
 		let session =
 			musig::signing_session(&keys, built.update_template_hash, [&pub_nonce_a, &pub_nonce_b])
 				.unwrap();

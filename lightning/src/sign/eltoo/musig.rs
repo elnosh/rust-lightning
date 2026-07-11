@@ -101,18 +101,18 @@ impl MusigChannelKeys {
 ///
 /// `session_rand` MUST be unique per generated nonce (sourced from an
 /// [`EntropySource`]); the signer's secret key is additionally mixed in as
-/// misuse-resistance, per BIP-327 recommendations. The message is deliberately not bound:
-/// eltoo pre-shares nonces one state ahead, before the next state's template hash is
-/// known.
+/// misuse-resistance, per BIP-327 recommendations. Neither the message nor (in the very
+/// first exchange) the aggregate key is necessarily known yet — eltoo pre-shares nonces
+/// one step ahead — so both bindings are optional.
 ///
 /// [`EntropySource`]: crate::sign::EntropySource
 pub fn generate_nonce_pair(
-	keys: &MusigChannelKeys, signer_seckey: &SecretKey, signer_pubkey: &PublicKey,
+	keys: Option<&MusigChannelKeys>, signer_seckey: &SecretKey, signer_pubkey: &PublicKey,
 	session_rand: [u8; 32],
 ) -> (MusigSecretNonce, MusigPubNonce) {
 	let (secret_nonce, public_nonce) = new_nonce_pair(
 		SessionSecretRand::assume_unique_per_nonce_gen(session_rand),
-		Some(&keys.cache),
+		keys.map(|k| &k.cache),
 		Some(conv_seckey(signer_seckey)),
 		conv_pubkey(signer_pubkey),
 		None,
@@ -222,8 +222,8 @@ mod tests {
 		assert_eq!(keys.aggregate_pubkey(), keys_swapped.aggregate_pubkey());
 
 		let msg = [0x07; 32];
-		let (sec_a, pub_a) = generate_nonce_pair(&keys, &sk_a, &pk_a, [0xa1; 32]);
-		let (sec_b, pub_b) = generate_nonce_pair(&keys, &sk_b, &pk_b, [0xb2; 32]);
+		let (sec_a, pub_a) = generate_nonce_pair(Some(&keys), &sk_a, &pk_a, [0xa1; 32]);
+		let (sec_b, pub_b) = generate_nonce_pair(Some(&keys), &sk_b, &pk_b, [0xb2; 32]);
 
 		let session = signing_session(&keys, msg, [&pub_a, &pub_b]).unwrap();
 		let psig_a = session.partial_sign(&keys, sec_a, &sk_a);
@@ -247,8 +247,8 @@ mod tests {
 		let keys = MusigChannelKeys::new(&pk_a, &pk_b);
 
 		let msg = [0x09; 32];
-		let (sec_a, pub_a) = generate_nonce_pair(&keys, &sk_a, &pk_a, [0xa3; 32]);
-		let (sec_b, pub_b) = generate_nonce_pair(&keys, &sk_b, &pk_b, [0xb4; 32]);
+		let (sec_a, pub_a) = generate_nonce_pair(Some(&keys), &sk_a, &pk_a, [0xa3; 32]);
+		let (sec_b, pub_b) = generate_nonce_pair(Some(&keys), &sk_b, &pk_b, [0xb4; 32]);
 		let session = signing_session(&keys, msg, [&pub_a, &pub_b]).unwrap();
 		let psig_a = session.partial_sign(&keys, sec_a, &sk_a);
 		let mut psig_b = session.partial_sign(&keys, sec_b, &sk_b);

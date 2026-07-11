@@ -235,9 +235,8 @@ impl EltooChannelSigner for InMemoryEltooSigner {
 
 	fn new_update_nonce(&mut self) -> MusigPubNonce {
 		let session_rand = self.next_session_rand();
-		let keys = self.musig_keys.as_ref().expect("channel keys must be provided first");
 		let (secret, public) = generate_nonce_pair(
-			keys,
+			self.musig_keys.as_ref(),
 			&self.funding_key,
 			&self.pubkeys.funding_pubkey,
 			session_rand,
@@ -265,9 +264,8 @@ impl EltooChannelSigner for InMemoryEltooSigner {
 
 	fn new_closing_nonce(&mut self) -> MusigPubNonce {
 		let session_rand = self.next_session_rand();
-		let keys = self.musig_keys.as_ref().expect("channel keys must be provided first");
 		let (secret, public) = generate_nonce_pair(
-			keys,
+			self.musig_keys.as_ref(),
 			&self.funding_key,
 			&self.pubkeys.funding_pubkey,
 			session_rand,
