@@ -28,6 +28,7 @@
 //! reputation.
 
 #![allow(dead_code)]
+#![allow(missing_docs)]
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use chacha20_poly1305::{chacha20::ChaCha20, Key, Nonce};
@@ -66,26 +67,26 @@ const REVENUE_WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
 /// This configuration controls how the resource manager allocates channel resources (HTLC slots
 /// and liquidity) across three buckets (general, congestion, and protected).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ResourceManagerConfig {
+pub struct ResourceManagerConfig {
 	/// The percentage of channel resources allocated to the general bucket.
 	/// The general bucket is available to all traffic with basic denial-of-service protections.
 	///
 	/// Default: 40%
-	pub(crate) general_allocation_pct: u8,
+	pub general_allocation_pct: u8,
 
 	/// The percentage of channel resources allocated to the congestion bucket.
 	/// The congestion bucket is used when the general bucket is saturated. It allows an outgoing
 	/// channel that does not have reputation to have a chance of getting the HTLC forwarded.
 	///
 	/// Default: 20%
-	pub(crate) congestion_allocation_pct: u8,
+	pub congestion_allocation_pct: u8,
 
 	/// The amount of time a HTLC is allowed to resolve in that classifies as "good" behavior.
 	/// HTLCs resolved within this period are rewarded in the reputation score. HTLCs resolved
 	/// slower than this will incur an opportunity cost penalty.
 	///
 	/// Default: 90 seconds
-	pub(crate) resolution_period: Duration,
+	pub resolution_period: Duration,
 
 	/// The rolling window over which we track the revenue an incoming channel has earned us.
 	///
@@ -106,7 +107,7 @@ pub(crate) struct ResourceManagerConfig {
 	/// Default: 2016 blocks * 10 minutes = ~2 weeks
 	///
 	/// [`reputation_multiplier`]: Self::reputation_multiplier
-	pub(crate) revenue_window: Duration,
+	pub revenue_window: Duration,
 
 	/// A multiplier applied to [`revenue_window`] that sets the window over which we measure an
 	/// outgoing channel's reputation, i.e. the history of revenue that channel has built up with
@@ -128,7 +129,7 @@ pub(crate) struct ResourceManagerConfig {
 	/// Default: 12 (meaning reputation is tracked over 12 * 2 weeks = 24 weeks)
 	///
 	/// [`revenue_window`]: Self::revenue_window
-	pub(crate) reputation_multiplier: u8,
+	pub reputation_multiplier: u8,
 }
 
 impl Default for ResourceManagerConfig {
@@ -173,7 +174,7 @@ fn min_accepted_htlcs(general_pct: u8) -> u16 {
 
 /// The outcome of an HTLC forwarding decision.
 #[derive(PartialEq, Eq, Debug)]
-pub(crate) enum ForwardingOutcome {
+pub enum ForwardingOutcome {
 	/// Forward the HTLC with the specified accountable signal.
 	///
 	/// When `true`, the downstream peer is told that slow resolution of this HTLC will be held
@@ -197,15 +198,67 @@ impl Display for ForwardingOutcome {
 	}
 }
 
+/// The reason an HTLC could not be forwarded. Sim-only detail exposed through
+/// [`ResourceManager::add_htlc_detailed`]; the production API only reports [`ForwardingOutcome::Fail`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FailReason {
+	/// The incoming HTLC was accountable and the outgoing channel does not have sufficient
+	/// reputation for us to take it on.
+	NoReputation,
+	/// The outgoing channel does not have reputation, so only general and congestion resources
+	/// were eligible, and neither had space.
+	NoGeneralResources,
+	/// The outgoing channel has reputation but no bucket had resources for the HTLC.
+	NoResources,
+}
+
+/// A [`ForwardingOutcome`] that also reports which bucket a forwarded HTLC was assigned to, or
+/// why it was failed. Sim-only detail for the jamming simulator's analysis.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DetailedForwardingOutcome {
+	Forward { accountable: bool, bucket: BucketAssigned },
+	Fail(FailReason),
+}
+
 /// Which bucket's resources a pending HTLC is holding, recorded so that those resources
 /// are released on resolution.
 #[derive(Clone, PartialEq, Eq, Debug)]
-enum BucketAssigned {
+pub enum BucketAssigned {
 	/// The specific general bucket slot indices occupied, as returned by
 	/// [`GeneralBucket::available_slots`].
 	General(Vec<u16>),
 	Congestion,
 	Protected,
+}
+
+/// A read-only snapshot of a single resource bucket's occupancy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BucketSnapshot {
+	pub slots_used: u16,
+	pub slots_available: u16,
+	pub liquidity_used_msat: u64,
+	pub liquidity_available_msat: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AllocationSnapshot {
+	pub outgoing_reputation: i64,
+	pub incoming_revenue: i64,
+	pub in_flight_total_risk: u64,
+	pub htlc_risk: u64,
+	pub general_eligible: bool,
+	pub congestion_eligible: bool,
+	pub general_bucket: BucketSnapshot,
+	pub congestion_bucket: BucketSnapshot,
+	pub protected_bucket: BucketSnapshot,
+}
+
+/// A snapshot of the reputation and revenue values tracked for a channel, used to persist and
+/// restore channel state across resource manager instances.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ChannelReputationSnapshot {
+	pub outgoing_reputation: i64,
+	pub incoming_revenue: i64,
 }
 
 /// The general bucket of a channel, available to all forwarding traffic.
@@ -221,6 +274,7 @@ struct GeneralBucket {
 	salt: [u8; 32],
 
 	total_slots: u16,
+	total_liquidity: u64,
 
 	/// The number of slots in the general bucket that each forwarding channel pair gets.
 	per_channel_slots: u8,
@@ -230,6 +284,10 @@ struct GeneralBucket {
 
 	/// Tracks the occupancy of each HTLC slot in the bucket.
 	slots_occupied: Vec<bool>,
+
+	/// When set, the bucket reports no available slots regardless of occupancy. Used by simulation
+	/// tooling to jam a channel's general resources.
+	jammed: bool,
 }
 
 impl GeneralBucket {
@@ -258,9 +316,11 @@ impl GeneralBucket {
 			channel_id,
 			salt: derive_channel_salt(node_salt, channel_id),
 			total_slots: slots_allocated,
+			total_liquidity: liquidity_allocated,
 			per_channel_slots,
 			per_slot_msat,
 			slots_occupied: vec![false; slots_allocated as usize],
+			jammed: false,
 		})
 	}
 
@@ -278,6 +338,10 @@ impl GeneralBucket {
 	fn available_slots(
 		&self, outgoing_channel_id: ChannelId, htlc_amount_msat: u64,
 	) -> Option<Vec<u16>> {
+		if self.jammed {
+			return None;
+		}
+
 		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
 		let mut channel_slots = assign_slots_for_channel(
@@ -307,6 +371,24 @@ impl GeneralBucket {
 	/// occupied (as recorded in its [`PendingHTLC`]).
 	fn remove_htlc(&mut self, slots: &[u16]) {
 		self.set_slots_occupied(slots, false);
+	}
+
+	/// Jams the bucket so it reports no available slots to any channel.
+	fn jam(&mut self) {
+		self.jammed = true;
+	}
+
+	/// Returns a read-only snapshot of the bucket's occupancy. The general bucket tracks liquidity
+	/// per-slot rather than as a used/available total, so `liquidity_used_msat` is approximated as
+	/// the number of occupied slots scaled by the per-slot liquidity.
+	fn snapshot(&self) -> BucketSnapshot {
+		let slots_used = self.slots_occupied.iter().filter(|occupied| **occupied).count() as u16;
+		BucketSnapshot {
+			slots_used,
+			slots_available: if self.jammed { 0 } else { self.total_slots },
+			liquidity_used_msat: slots_used as u64 * self.per_slot_msat,
+			liquidity_available_msat: if self.jammed { 0 } else { self.total_liquidity },
+		}
 	}
 }
 
@@ -399,6 +481,16 @@ impl BucketResources {
 		self.slots_used -= 1;
 		self.liquidity_used -= htlc_amount_msat;
 		Ok(())
+	}
+
+	/// Returns a read-only snapshot of the bucket's occupancy.
+	fn snapshot(&self) -> BucketSnapshot {
+		BucketSnapshot {
+			slots_used: self.slots_used,
+			slots_available: self.slots_allocated,
+			liquidity_used_msat: self.liquidity_used,
+			liquidity_available_msat: self.liquidity_allocated,
+		}
 	}
 }
 
@@ -621,7 +713,7 @@ impl Channel {
 
 /// An implementation for managing channel resources and informing HTLC forwarding decisions. It
 /// implements the core of the mitigation as proposed in <https://github.com/lightning/bolts/pull/1280>.
-pub(crate) struct ResourceManager {
+pub struct ResourceManager {
 	config: ResourceManagerConfig,
 	/// A salt used to generate per-channel general bucket slots.
 	node_salt: [u8; 32],
@@ -629,7 +721,7 @@ pub(crate) struct ResourceManager {
 }
 
 impl ResourceManager {
-	pub(crate) fn new<ES: EntropySource>(
+	pub fn new<ES: EntropySource>(
 		config: ResourceManagerConfig, entropy_source: &ES,
 	) -> Result<Self, ()> {
 		config.validate()?;
@@ -713,9 +805,37 @@ impl ResourceManager {
 	/// Registers a new channel with the resource manager for tracking.
 	///
 	/// This should be called when a channel becomes ready for forwarding
-	pub(crate) fn add_channel(
+	pub fn add_channel(
 		&self, channel_id: ChannelId, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
 		timestamp_unix_secs: u64,
+	) -> Result<(), ()> {
+		self.add_channel_inner(
+			channel_id,
+			max_htlc_value_in_flight_msat,
+			max_accepted_htlcs,
+			timestamp_unix_secs,
+			None,
+		)
+	}
+
+	/// Registers a new channel, seeding its reputation and revenue from a previously recorded
+	/// snapshot rather than starting from zero. See [`Self::add_channel`].
+	pub fn add_channel_with_reputation(
+		&self, channel_id: ChannelId, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+		timestamp_unix_secs: u64, reputation: ChannelReputationSnapshot,
+	) -> Result<(), ()> {
+		self.add_channel_inner(
+			channel_id,
+			max_htlc_value_in_flight_msat,
+			max_accepted_htlcs,
+			timestamp_unix_secs,
+			Some(reputation),
+		)
+	}
+
+	fn add_channel_inner(
+		&self, channel_id: ChannelId, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+		timestamp_unix_secs: u64, reputation: Option<ChannelReputationSnapshot>,
 	) -> Result<(), ()> {
 		if max_accepted_htlcs > 483
 			|| max_htlc_value_in_flight_msat >= TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000
@@ -732,7 +852,7 @@ impl ResourceManager {
 		let mut channels_lock = self.channels.lock().unwrap();
 		match channels_lock.entry(channel_id) {
 			Entry::Vacant(entry) => {
-				let channel = Channel::new(
+				let mut channel = Channel::new(
 					channel_id,
 					&self.node_salt,
 					&self.config,
@@ -740,6 +860,14 @@ impl ResourceManager {
 					max_htlc_value_in_flight_msat,
 					timestamp_unix_secs,
 				)?;
+				if let Some(reputation) = reputation {
+					channel
+						.outgoing_reputation
+						.set_value(reputation.outgoing_reputation, timestamp_unix_secs);
+					channel
+						.incoming_revenue
+						.set_value(reputation.incoming_revenue, timestamp_unix_secs);
+				}
 				entry.insert(channel);
 				Ok(())
 			},
@@ -757,7 +885,7 @@ impl ResourceManager {
 	/// Removes a channel from the resource manager.
 	///
 	/// This must be called when a channel is closing.
-	pub(crate) fn remove_channel(&self, channel_id: ChannelId) -> Result<(), ()> {
+	pub fn remove_channel(&self, channel_id: ChannelId) -> Result<(), ()> {
 		let mut channels_lock = self.channels.lock().unwrap();
 
 		// If the channel has pending HTLCs, it is soft-deleted and will be fully removed once
@@ -789,11 +917,38 @@ impl ResourceManager {
 	/// - `ForwardingOutcome::Forward(accountable)`: The HTLC should be forwarded. The boolean
 	///   flag indicates the accountable signal to use for the outgoing HTLC.
 	/// - `ForwardingOutcome::Fail`: The HTLC should be failed back to the sender.
-	pub(crate) fn add_htlc(
+	pub fn add_htlc(
 		&self, incoming_channel_id: ChannelId, incoming_amount_msat: u64,
 		incoming_cltv_expiry: u32, outgoing_channel_id: ChannelId, outgoing_amount_msat: u64,
 		incoming_accountable: bool, htlc_id: u64, height_added: u32, added_at: u64,
 	) -> Result<ForwardingOutcome, ()> {
+		Ok(
+			match self.add_htlc_detailed(
+				incoming_channel_id,
+				incoming_amount_msat,
+				incoming_cltv_expiry,
+				outgoing_channel_id,
+				outgoing_amount_msat,
+				incoming_accountable,
+				htlc_id,
+				height_added,
+				added_at,
+			)? {
+				DetailedForwardingOutcome::Forward { accountable, .. } => {
+					ForwardingOutcome::Forward(accountable)
+				},
+				DetailedForwardingOutcome::Fail(_) => ForwardingOutcome::Fail,
+			},
+		)
+	}
+
+	/// [`Self::add_htlc`], additionally reporting the bucket assigned or the reason for failure.
+	/// NOTE: sim-only, added for the jamming simulator's analysis.
+	pub fn add_htlc_detailed(
+		&self, incoming_channel_id: ChannelId, incoming_amount_msat: u64,
+		incoming_cltv_expiry: u32, outgoing_channel_id: ChannelId, outgoing_amount_msat: u64,
+		incoming_accountable: bool, htlc_id: u64, height_added: u32, added_at: u64,
+	) -> Result<DetailedForwardingOutcome, ()> {
 		if (outgoing_amount_msat > incoming_amount_msat)
 			|| (height_added >= incoming_cltv_expiry)
 			|| (incoming_cltv_expiry - height_added) > CLTV_FAR_FAR_AWAY
@@ -830,19 +985,19 @@ impl ResourceManager {
 		let fee = incoming_amount_msat - outgoing_amount_msat;
 		let in_flight_htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
 
+		let has_reputation =
+			incoming_channel.sufficient_reputation(outgoing_channel, in_flight_htlc_risk, added_at);
+
 		let (accountable, bucket_assigned) = if !incoming_accountable {
 			if let Some(slots) = incoming_channel
 				.incoming_general_bucket
 				.available_slots(outgoing_channel_id, incoming_amount_msat)
 			{
 				(false, BucketAssigned::General(slots))
-			} else if incoming_channel.sufficient_reputation(
-				outgoing_channel,
-				in_flight_htlc_risk,
-				added_at,
-			) && incoming_channel
-				.incoming_protected_bucket
-				.resources_available(incoming_amount_msat)
+			} else if has_reputation
+				&& incoming_channel
+					.incoming_protected_bucket
+					.resources_available(incoming_amount_msat)
 			{
 				(true, BucketAssigned::Protected)
 			} else if incoming_channel.can_use_incoming_congestion_slot(
@@ -852,16 +1007,16 @@ impl ResourceManager {
 			) {
 				(true, BucketAssigned::Congestion)
 			} else {
-				return Ok(ForwardingOutcome::Fail);
+				return Ok(DetailedForwardingOutcome::Fail(if has_reputation {
+					FailReason::NoResources
+				} else {
+					FailReason::NoGeneralResources
+				}));
 			}
 		} else {
 			// If the incoming HTLC is accountable, we only forward it if the outgoing
 			// channel has sufficient reputation, otherwise we fail it.
-			if incoming_channel.sufficient_reputation(
-				outgoing_channel,
-				in_flight_htlc_risk,
-				added_at,
-			) {
+			if has_reputation {
 				if incoming_channel
 					.incoming_protected_bucket
 					.resources_available(incoming_amount_msat)
@@ -873,10 +1028,10 @@ impl ResourceManager {
 				{
 					(true, BucketAssigned::General(slots))
 				} else {
-					return Ok(ForwardingOutcome::Fail);
+					return Ok(DetailedForwardingOutcome::Fail(FailReason::NoResources));
 				}
 			} else {
-				return Ok(ForwardingOutcome::Fail);
+				return Ok(DetailedForwardingOutcome::Fail(FailReason::NoReputation));
 			}
 		};
 
@@ -898,11 +1053,11 @@ impl ResourceManager {
 			outgoing_accountable: accountable,
 			added_at_unix_seconds: added_at,
 			in_flight_risk: in_flight_htlc_risk,
-			bucket: bucket_assigned,
+			bucket: bucket_assigned.clone(),
 		};
 		outgoing_channel.pending_htlcs.insert(htlc_ref, pending_htlc);
 
-		Ok(ForwardingOutcome::Forward(accountable))
+		Ok(DetailedForwardingOutcome::Forward { accountable, bucket: bucket_assigned })
 	}
 
 	/// Records the resolution of a forwarded HTLC.
@@ -912,7 +1067,7 @@ impl ResourceManager {
 	/// to release resources and update any internal tracking state.
 	///
 	/// [`add_htlc`]: ResourceManager::add_htlc
-	pub(crate) fn resolve_htlc(
+	pub fn resolve_htlc(
 		&self, incoming_channel_id: ChannelId, htlc_id: u64, outgoing_channel_id: ChannelId,
 		settled: bool, resolved_at: u64,
 	) {
@@ -998,6 +1153,95 @@ impl ResourceManager {
 		remove_channel(incoming_closed, incoming_channel_id);
 		remove_channel(outgoing_closed, outgoing_channel_id);
 	}
+
+	/// Returns a read-only snapshot of the reputation, revenue, risk and bucket resources that
+	/// would inform the forwarding decision for the proposed HTLC, without adding it. NOTE:
+	/// adding this to be able to impl the `ReputationManager` trait in jam-ln.
+	pub fn allocation_snapshot(
+		&self, incoming_channel_id: ChannelId, incoming_amount_msat: u64,
+		incoming_cltv_expiry: u32, outgoing_channel_id: ChannelId, outgoing_amount_msat: u64,
+		height_added: u32, at_timestamp: u64,
+	) -> Result<AllocationSnapshot, ()> {
+		let fee = incoming_amount_msat.saturating_sub(outgoing_amount_msat);
+		let htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
+
+		let mut channels_lock = self.channels.lock().unwrap();
+		let [Some(incoming_channel), Some(outgoing_channel)] =
+			channels_lock.get_disjoint_mut([&incoming_channel_id, &outgoing_channel_id])
+		else {
+			return Err(());
+		};
+
+		let incoming_revenue = incoming_channel.incoming_revenue.value_at_timestamp(at_timestamp);
+		let general_eligible = incoming_channel
+			.incoming_general_bucket
+			.available_slots(outgoing_channel_id, incoming_amount_msat)
+			.is_some();
+		let congestion_eligible = incoming_channel.can_use_incoming_congestion_slot(
+			&outgoing_channel,
+			incoming_amount_msat,
+			at_timestamp,
+		);
+
+		let general_bucket = incoming_channel.incoming_general_bucket.snapshot();
+		let congestion_bucket = incoming_channel.incoming_congestion_bucket.snapshot();
+		let protected_bucket = incoming_channel.incoming_protected_bucket.snapshot();
+
+		let outgoing_reputation =
+			outgoing_channel.outgoing_reputation.value_at_timestamp(at_timestamp);
+		let in_flight_total_risk = outgoing_channel.outgoing_in_flight_risk();
+
+		Ok(AllocationSnapshot {
+			outgoing_reputation,
+			incoming_revenue,
+			in_flight_total_risk,
+			htlc_risk,
+			general_eligible,
+			congestion_eligible,
+			general_bucket,
+			congestion_bucket,
+			protected_bucket,
+		})
+	}
+
+	/// Returns a snapshot of the reputation and revenue tracked for each channel at the given
+	/// timestamp. Mutates the underlying decaying averages to `at_timestamp`.
+	pub fn list_channels(
+		&self, at_timestamp: u64,
+	) -> HashMap<ChannelId, ChannelReputationSnapshot> {
+		let mut channels_lock = self.channels.lock().unwrap();
+		let mut snapshots = new_hash_map();
+		for (channel_id, channel) in channels_lock.iter_mut() {
+			snapshots.insert(
+				*channel_id,
+				ChannelReputationSnapshot {
+					outgoing_reputation: channel
+						.outgoing_reputation
+						.value_at_timestamp(at_timestamp),
+					incoming_revenue: channel.incoming_revenue.value_at_timestamp(at_timestamp),
+				},
+			);
+		}
+		snapshots
+	}
+
+	/// Jams a channel's general resources so that no HTLC can use its general bucket. Intended for
+	/// simulation and testing.
+	pub fn general_jam_channel(&self, channel_id: ChannelId) -> Result<(), ()> {
+		let mut channels_lock = self.channels.lock().unwrap();
+		channels_lock.get_mut(&channel_id).ok_or(())?.incoming_general_bucket.jam();
+		Ok(())
+	}
+
+	/// Jams a channel's congestion resources so that no HTLC can use its congestion bucket.
+	/// Intended for simulation and testing.
+	pub fn congestion_jam_channel(&self, channel_id: ChannelId) -> Result<(), ()> {
+		let mut channels_lock = self.channels.lock().unwrap();
+		let channel = channels_lock.get_mut(&channel_id).ok_or(())?;
+		channel.incoming_congestion_bucket.slots_allocated = 0;
+		channel.incoming_congestion_bucket.liquidity_allocated = 0;
+		Ok(())
+	}
 }
 
 /// A weighted average that decays over a specified window. It is a decaying average with a
@@ -1037,6 +1281,11 @@ impl DecayingAverage {
 		self.last_updated_unix_secs = timestamp;
 		self.value
 	}
+
+	fn set_value(&mut self, value: i64, timestamp_unix_secs: u64) {
+		self.value = value;
+		self.last_updated_unix_secs = timestamp_unix_secs;
+	}
 }
 
 /// Estimates how much value accumulates per [`Self::average_duration`], averaged across the last
@@ -1074,6 +1323,11 @@ impl SmoothedDecayingAverage {
 		self.aggregated_decaying_average.add_value(value, timestamp)
 	}
 
+	fn set_value(&mut self, value: i64, timestamp_unix_secs: u64) {
+		self.start_timestamp_unix_secs = timestamp_unix_secs;
+		self.aggregated_decaying_average.set_value(value, timestamp_unix_secs);
+	}
+
 	fn value_at_timestamp(&self, timestamp_unix_secs: u64) -> i64 {
 		let timestamp = u64::max(timestamp_unix_secs, self.start_timestamp_unix_secs);
 
@@ -1100,9 +1354,6 @@ impl SmoothedDecayingAverage {
 	}
 }
 
-#[cfg(fuzzing)]
-pub mod fuzz;
-
 #[cfg(test)]
 mod tests {
 	use core::time::Duration;
@@ -1114,8 +1365,9 @@ mod tests {
 			channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 			resource_manager::{
 				assign_slots_for_channel, derive_channel_salt, BucketAssigned, BucketResources,
-				Channel, DecayingAverage, ForwardingOutcome, GeneralBucket, HtlcRef,
-				ResourceManager, ResourceManagerConfig, SmoothedDecayingAverage,
+				Channel, ChannelReputationSnapshot, DecayingAverage, ForwardingOutcome,
+				GeneralBucket, HtlcRef, ResourceManager, ResourceManagerConfig,
+				SmoothedDecayingAverage,
 			},
 			types::ChannelId,
 		},
@@ -1492,6 +1744,98 @@ mod tests {
 
 	fn create_test_resource_manager_with_channels() -> ResourceManager {
 		create_test_resource_manager_with_channel_pairs(1)
+	}
+
+	#[test]
+	fn test_add_channel_with_reputation_round_trip() {
+		// A channel seeded from a snapshot should report the seeded reputation and revenue exactly
+		// when queried at the seeding timestamp.
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let rm = ResourceManager::new(ResourceManagerConfig::default(), &entropy_source).unwrap();
+
+		let snapshot =
+			ChannelReputationSnapshot { outgoing_reputation: 12_345, incoming_revenue: 6_789 };
+		rm.add_channel_with_reputation(
+			INCOMING_CHANNEL_ID,
+			5_000_000_000,
+			114,
+			START_TIME,
+			snapshot,
+		)
+		.unwrap();
+
+		let channels = rm.list_channels(START_TIME);
+		let got = channels.get(&INCOMING_CHANNEL_ID).unwrap();
+		assert_eq!(got.outgoing_reputation, 12_345);
+		assert_eq!(got.incoming_revenue, 6_789);
+
+		// A channel added without a snapshot starts at zero.
+		rm.add_channel(OUTGOING_CHANNEL_ID, 5_000_000_000, 114, START_TIME).unwrap();
+		let channels = rm.list_channels(START_TIME);
+		let got = channels.get(&OUTGOING_CHANNEL_ID).unwrap();
+		assert_eq!(got.outgoing_reputation, 0);
+		assert_eq!(got.incoming_revenue, 0);
+	}
+
+	#[test]
+	fn test_general_jam_channel() {
+		let rm = create_test_resource_manager_with_channels();
+
+		// Before jamming, the general bucket has slots available.
+		let snap = rm
+			.allocation_snapshot(
+				INCOMING_CHANNEL_ID,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_CHANNEL_ID,
+				HTLC_AMOUNT,
+				CURRENT_HEIGHT,
+				START_TIME,
+			)
+			.unwrap();
+		assert!(snap.general_eligible);
+		assert!(snap.general_bucket.slots_available > 0);
+
+		rm.general_jam_channel(INCOMING_CHANNEL_ID).unwrap();
+
+		let snap = rm
+			.allocation_snapshot(
+				INCOMING_CHANNEL_ID,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_CHANNEL_ID,
+				HTLC_AMOUNT,
+				CURRENT_HEIGHT,
+				START_TIME,
+			)
+			.unwrap();
+		assert!(!snap.general_eligible);
+		assert_eq!(snap.general_bucket.slots_available, 0);
+
+		// Jamming an unknown channel errors.
+		assert!(rm.general_jam_channel(ChannelId([99; 32])).is_err());
+	}
+
+	#[test]
+	fn test_congestion_jam_channel() {
+		let rm = create_test_resource_manager_with_channels();
+		rm.congestion_jam_channel(INCOMING_CHANNEL_ID).unwrap();
+
+		let snap = rm
+			.allocation_snapshot(
+				INCOMING_CHANNEL_ID,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_CHANNEL_ID,
+				HTLC_AMOUNT,
+				CURRENT_HEIGHT,
+				START_TIME,
+			)
+			.unwrap();
+		assert!(!snap.congestion_eligible);
+		assert_eq!(snap.congestion_bucket.slots_available, 0);
+
+		assert!(rm.congestion_jam_channel(ChannelId([99; 32])).is_err());
 	}
 
 	fn add_test_htlc(
@@ -1971,7 +2315,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
