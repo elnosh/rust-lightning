@@ -25,7 +25,7 @@ pub mod onion_payment;
 pub mod our_peer_storage;
 pub mod peer_handler;
 #[cfg(feature = "std")]
-mod resource_manager;
+pub mod resource_manager;
 pub mod script;
 pub mod types;
 
