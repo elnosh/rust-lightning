@@ -514,6 +514,11 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 		self.counterparty_pubkeys.as_ref().expect("keys exchanged").funding_pubkey
 	}
 
+	/// The counterparty's node id.
+	pub fn counterparty_node_id(&self) -> PublicKey {
+		self.counterparty_node_id
+	}
+
 	// ===== Establishment =====
 
 	/// Produces the `open_channel_eltoo` message (initiator only).
@@ -1641,6 +1646,201 @@ impl AdvanceContext {
 
 fn xonly_to_even_pubkey(key: &bitcoin::secp256k1::XOnlyPublicKey) -> PublicKey {
 	PublicKey::from_x_only_public_key(*key, bitcoin::secp256k1::Parity::Even)
+}
+
+// ===== Serialization =====
+
+use crate::io::{self, Read};
+use crate::ln::eltoo::persist::ELTOO_SERIALIZATION_VERSION;
+use crate::ln::msgs::DecodeError;
+use crate::sign::eltoo::EltooSignerProvider;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+
+impl Writeable for EltooChannelConfig {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.max_htlc_value_in_flight_msat.write(w)?;
+		self.htlc_minimum_msat.write(w)?;
+		self.max_accepted_htlcs.write(w)?;
+		self.minimum_depth.write(w)?;
+		self.shared_delay.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for EltooChannelConfig {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(EltooChannelConfig {
+			max_htlc_value_in_flight_msat: Readable::read(r)?,
+			htlc_minimum_msat: Readable::read(r)?,
+			max_accepted_htlcs: Readable::read(r)?,
+			minimum_depth: Readable::read(r)?,
+			shared_delay: Readable::read(r)?,
+		})
+	}
+}
+
+impl Writeable for CounterpartyLimits {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.max_htlc_value_in_flight_msat.write(w)?;
+		self.htlc_minimum_msat.write(w)?;
+		self.max_accepted_htlcs.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for CounterpartyLimits {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(CounterpartyLimits {
+			max_htlc_value_in_flight_msat: Readable::read(r)?,
+			htlc_minimum_msat: Readable::read(r)?,
+			max_accepted_htlcs: Readable::read(r)?,
+		})
+	}
+}
+
+impl Writeable for Stage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			Stage::Negotiating => {
+				0u8.write(w)?;
+			},
+			Stage::AwaitingReady { our_ready_sent, their_ready_received } => {
+				1u8.write(w)?;
+				our_ready_sent.write(w)?;
+				their_ready_received.write(w)?;
+			},
+			Stage::Ready => {
+				2u8.write(w)?;
+			},
+			Stage::Closing => {
+				3u8.write(w)?;
+			},
+			Stage::Closed => {
+				4u8.write(w)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for Stage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let tag: u8 = Readable::read(r)?;
+		match tag {
+			0 => Ok(Stage::Negotiating),
+			1 => Ok(Stage::AwaitingReady {
+				our_ready_sent: Readable::read(r)?,
+				their_ready_received: Readable::read(r)?,
+			}),
+			2 => Ok(Stage::Ready),
+			3 => Ok(Stage::Closing),
+			4 => Ok(Stage::Closed),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl<S: EltooChannelSigner> Writeable for EltooChannel<S> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		ELTOO_SERIALIZATION_VERSION.write(w)?;
+		self.channel_id.write(w)?;
+		self.is_initiator.write(w)?;
+		self.our_node_id.write(w)?;
+		self.counterparty_node_id.write(w)?;
+		self.config.write(w)?;
+		self.counterparty_limits.write(w)?;
+		self.shared_delay.write(w)?;
+		self.capacity_sat.write(w)?;
+		self.push_msat.write(w)?;
+		self.counterparty_pubkeys.write(w)?;
+		self.channel_params.write(w)?;
+		self.funding.write(w)?;
+		self.stage.write(w)?;
+		self.current.write(w)?;
+		self.pending_commit.write(w)?;
+		self.our_next_htlc_id.write(w)?;
+		self.their_next_htlc_id.write(w)?;
+		self.our_shutdown_script.write(w)?;
+		self.their_shutdown_script.write(w)?;
+		self.closing_tx.write(w)?;
+		// The signer is re-derived on read from its key-derivation id (plus the
+		// counterparty funding pubkey, carried in `counterparty_pubkeys`).
+		self.signer.channel_keys_id().write(w)?;
+		// The turn machine, update queues and MuSig2 nonces are *not* persisted: the
+		// secret nonces must never touch disk, and a restart forces a reestablish that
+		// re-provisions fresh nonces and re-derives the turn.
+		Ok(())
+	}
+}
+
+impl<ES: EltooSignerProvider> ReadableArgs<&ES> for EltooChannel<ES::EltooSigner> {
+	fn read<R: Read>(r: &mut R, signer_provider: &ES) -> Result<Self, DecodeError> {
+		let version: u8 = Readable::read(r)?;
+		if version > ELTOO_SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+		let channel_id = Readable::read(r)?;
+		let is_initiator = Readable::read(r)?;
+		let our_node_id = Readable::read(r)?;
+		let counterparty_node_id = Readable::read(r)?;
+		let config = Readable::read(r)?;
+		let counterparty_limits = Readable::read(r)?;
+		let shared_delay = Readable::read(r)?;
+		let capacity_sat = Readable::read(r)?;
+		let push_msat = Readable::read(r)?;
+		let counterparty_pubkeys: Option<EltooChannelPublicKeys> = Readable::read(r)?;
+		let channel_params = Readable::read(r)?;
+		let funding = Readable::read(r)?;
+		let stage = Readable::read(r)?;
+		let current = Readable::read(r)?;
+		let pending_commit = Readable::read(r)?;
+		let our_next_htlc_id = Readable::read(r)?;
+		let their_next_htlc_id = Readable::read(r)?;
+		let our_shutdown_script = Readable::read(r)?;
+		let their_shutdown_script = Readable::read(r)?;
+		let closing_tx = Readable::read(r)?;
+		let channel_keys_id: [u8; 32] = Readable::read(r)?;
+
+		let mut signer = signer_provider.derive_eltoo_channel_signer(channel_keys_id);
+		if let Some(pubkeys) = counterparty_pubkeys.as_ref() {
+			signer.provide_channel_keys(&pubkeys.funding_pubkey);
+		}
+
+		Ok(EltooChannel {
+			channel_id,
+			is_initiator,
+			our_node_id,
+			counterparty_node_id,
+			config,
+			counterparty_limits,
+			shared_delay,
+			capacity_sat,
+			push_msat,
+			counterparty_pubkeys,
+			channel_params,
+			funding,
+			stage,
+			current,
+			pending_commit,
+			// Transient protocol state — reset on load (see `write`).
+			turn: Turn::TheirsIdle,
+			local_queue: VecDeque::new(),
+			in_flight_local: Vec::new(),
+			uncommitted_remote: Vec::new(),
+			our_next_nonce: None,
+			their_next_nonce: None,
+			our_next_htlc_id,
+			their_next_htlc_id,
+			our_shutdown_script,
+			their_shutdown_script,
+			their_closing_nonce: None,
+			our_closing_nonce: None,
+			our_closing_psig: None,
+			closing_tx,
+			signer,
+			secp: Secp256k1::new(),
+		})
+	}
 }
 
 #[cfg(test)]

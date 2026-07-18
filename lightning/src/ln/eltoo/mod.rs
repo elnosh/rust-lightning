@@ -37,6 +37,7 @@ pub mod channelmanager;
 pub mod monitor;
 pub mod msgs;
 pub mod peer_glue;
+pub(crate) mod persist;
 pub mod tx;
 
 #[cfg(test)]

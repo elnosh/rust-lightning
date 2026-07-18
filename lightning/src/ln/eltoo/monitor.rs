@@ -29,7 +29,7 @@
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
-use bitcoin::secp256k1::{All, Secp256k1};
+use bitcoin::secp256k1::{All, PublicKey, Secp256k1};
 use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
 
 use crate::ln::eltoo::tx::{
@@ -163,6 +163,10 @@ pub struct EltooChannelMonitor<S: EltooChannelSigner> {
 	channel_id: ChannelId,
 	params: EltooChannelParams,
 	funding_outpoint: OutPoint,
+	/// The counterparty's funding pubkey. Persisted so the signer can be re-derived on
+	/// startup (it is `provide_channel_keys`'d with this to reconstruct `P_agg`); the
+	/// signer itself is never serialized.
+	counterparty_funding_pubkey: PublicKey,
 
 	/// The latest fully-signed state — the only state we can *broadcast*.
 	current: MonitorState,
@@ -185,13 +189,15 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 	/// Creates a monitor from the channel's initial fully-signed state.
 	pub fn new(
 		channel_id: ChannelId, params: EltooChannelParams, funding_outpoint: OutPoint,
-		initial_state: MonitorState, signer: S, best_height: u32,
+		counterparty_funding_pubkey: PublicKey, initial_state: MonitorState, signer: S,
+		best_height: u32,
 	) -> Self {
 		debug_assert!(initial_state.agg_sig.is_some(), "initial state must be complete");
 		Self {
 			channel_id,
 			params,
 			funding_outpoint,
+			counterparty_funding_pubkey,
 			current: initial_state,
 			committed: None,
 			preimages: Vec::new(),
@@ -608,6 +614,124 @@ fn htlc_offered_by_initiator<S: EltooChannelSigner>(
 	htlc.offered_by_us == we_are_initiator
 }
 
+// ===== Serialization =====
+
+use crate::io::{self, Read};
+use crate::ln::eltoo::persist::{read_vec, write_vec, ELTOO_SERIALIZATION_VERSION};
+use crate::ln::msgs::DecodeError;
+use crate::sign::eltoo::EltooSignerProvider;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+
+impl Writeable for OnchainStatus {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			OnchainStatus::FundingUnspent => {
+				0u8.write(w)?;
+			},
+			OnchainStatus::UpdateConfirmed {
+				state,
+				state_outpoint,
+				settlement_height,
+				settle_leaf_hash,
+			} => {
+				1u8.write(w)?;
+				state.write(w)?;
+				state_outpoint.write(w)?;
+				settlement_height.write(w)?;
+				settle_leaf_hash.write(w)?;
+			},
+			OnchainStatus::SettlementConfirmed { txid, is_latest } => {
+				2u8.write(w)?;
+				txid.write(w)?;
+				is_latest.write(w)?;
+			},
+			OnchainStatus::Resolved => {
+				3u8.write(w)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for OnchainStatus {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let tag: u8 = Readable::read(r)?;
+		match tag {
+			0 => Ok(OnchainStatus::FundingUnspent),
+			1 => Ok(OnchainStatus::UpdateConfirmed {
+				state: Readable::read(r)?,
+				state_outpoint: Readable::read(r)?,
+				settlement_height: Readable::read(r)?,
+				settle_leaf_hash: Readable::read(r)?,
+			}),
+			2 => Ok(OnchainStatus::SettlementConfirmed {
+				txid: Readable::read(r)?,
+				is_latest: Readable::read(r)?,
+			}),
+			3 => Ok(OnchainStatus::Resolved),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl<S: EltooChannelSigner> Writeable for EltooChannelMonitor<S> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		ELTOO_SERIALIZATION_VERSION.write(w)?;
+		self.channel_id.write(w)?;
+		self.params.write(w)?;
+		self.funding_outpoint.write(w)?;
+		self.counterparty_funding_pubkey.write(w)?;
+		// The signer is not serialized; its key-derivation id + the counterparty funding
+		// pubkey above are enough to re-derive it from an `EltooSignerProvider`.
+		self.signer.channel_keys_id().write(w)?;
+		self.current.write(w)?;
+		self.committed.write(w)?;
+		write_vec(&self.preimages, w)?;
+		self.status.write(w)?;
+		write_vec(&self.pending_htlc_claims, w)?;
+		self.best_height.write(w)?;
+		Ok(())
+	}
+}
+
+impl<ES: EltooSignerProvider> ReadableArgs<&ES> for EltooChannelMonitor<ES::EltooSigner> {
+	fn read<R: Read>(r: &mut R, signer_provider: &ES) -> Result<Self, DecodeError> {
+		let version: u8 = Readable::read(r)?;
+		if version > ELTOO_SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+		let channel_id = Readable::read(r)?;
+		let params = Readable::read(r)?;
+		let funding_outpoint = Readable::read(r)?;
+		let counterparty_funding_pubkey: PublicKey = Readable::read(r)?;
+		let channel_keys_id: [u8; 32] = Readable::read(r)?;
+		let current = Readable::read(r)?;
+		let committed = Readable::read(r)?;
+		let preimages = read_vec(r)?;
+		let status = Readable::read(r)?;
+		let pending_htlc_claims = read_vec(r)?;
+		let best_height = Readable::read(r)?;
+
+		let mut signer = signer_provider.derive_eltoo_channel_signer(channel_keys_id);
+		signer.provide_channel_keys(&counterparty_funding_pubkey);
+
+		Ok(EltooChannelMonitor {
+			channel_id,
+			params,
+			funding_outpoint,
+			counterparty_funding_pubkey,
+			current,
+			committed,
+			preimages,
+			status,
+			pending_htlc_claims,
+			best_height,
+			signer,
+			secp: Secp256k1::new(),
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -689,6 +813,7 @@ mod tests {
 			chan.channel_id(),
 			chan.channel_params().unwrap().clone(),
 			funding_outpoint,
+			counterparty_funding,
 			chan.current_state().unwrap().to_monitor_state(),
 			signer,
 			height,

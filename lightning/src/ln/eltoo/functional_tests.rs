@@ -218,6 +218,73 @@ fn cooperative_close_via_manager() {
 }
 
 #[test]
+fn channel_and_monitor_survive_restart() {
+	let a = make_node(0x41, 100);
+	let b = make_node(0x42, 100);
+	let channel_id = open_channel(&a, &b, 1_000_000, 0);
+
+	// One payment so the persisted tip is state 2 (open readies state 0; the add and the
+	// auto-fulfill are states 1 and 2), not the trivial funding state.
+	let preimage = PaymentPreimage([0x55; 32]);
+	let payment_hash = b.manager.register_payment(preimage);
+	a.manager.send_payment(channel_id, 200_000_000, payment_hash, 500_000).unwrap();
+	pump(&[&a, &b]);
+	a.manager.get_and_clear_events();
+	b.manager.get_and_clear_events();
+
+	// Persist both sides. A ready channel appears in `persistable_channel_ids` and
+	// serializes to a single O(1) blob (tip signed state + static params + preimages).
+	assert_eq!(a.manager.persistable_channel_ids(), vec![channel_id]);
+	let a_blob = a.manager.serialize_channel_state(channel_id).expect("a serializes");
+	let b_blob = b.manager.serialize_channel_state(channel_id).expect("b serializes");
+
+	// "Restart": brand-new managers seeded identically (so the `KeysManager` re-derives
+	// byte-identical signers from the persisted `channel_keys_id`), then reload the blobs.
+	let a2 = make_node(0x41, 260);
+	let b2 = make_node(0x42, 260);
+	assert!(a2.manager.persistable_channel_ids().is_empty(), "fresh manager knows nothing");
+	assert_eq!(a2.manager.load_persisted_channel(&a_blob).unwrap(), channel_id);
+	assert_eq!(b2.manager.load_persisted_channel(&b_blob).unwrap(), channel_id);
+	// Reloading the same blob twice is idempotent (no duplicate channel/monitor).
+	assert_eq!(a2.manager.load_persisted_channel(&a_blob).unwrap(), channel_id);
+	assert_eq!(a2.manager.persistable_channel_ids(), vec![channel_id]);
+
+	// The reloaded monitor still holds the tip state's aggregate signature, so a
+	// force-close after restart broadcasts the state-2 update transaction.
+	a2.manager.force_close_channel(channel_id);
+	let events = a2.manager.get_and_clear_events();
+	let (update_tx, anchor) = events
+		.iter()
+		.find_map(|event| match event {
+			EltooEvent::BroadcastTransaction { tx, anchor_outpoint } => {
+				Some((tx.clone(), *anchor_outpoint))
+			},
+			_ => None,
+		})
+		.expect("force-close after restart must broadcast the update tx");
+	assert!(anchor.is_some(), "zero-fee update still comes with a CPFP anchor after reload");
+	assert_eq!(update_tx.lock_time.to_consensus_u32(), 500_000_002, "tip is state 2");
+
+	// And its signature-free settlement follows after the shared delay — the whole point:
+	// the tip survived the restart intact and the channel can still be resolved on-chain.
+	a2.manager.transactions_confirmed(&[update_tx.clone()], 270);
+	a2.manager.best_block_updated(270 + 144);
+	let events = a2.manager.get_and_clear_events();
+	let settlement = events
+		.iter()
+		.find_map(|event| match event {
+			EltooEvent::BroadcastTransaction { tx, .. } => Some(tx.clone()),
+			_ => None,
+		})
+		.expect("settlement broadcast after restart");
+	assert_eq!(settlement.input[0].previous_output.txid, update_tx.compute_txid());
+	assert_eq!(settlement.input[0].witness.len(), 2, "covenant spend, no signature");
+
+	// The reloaded peer B agrees on the state the update transaction settles.
+	b2.manager.transactions_confirmed(&[update_tx], 270);
+}
+
+#[test]
 fn force_close_and_onchain_settlement() {
 	let a = make_node(0x41, 100);
 	let b = make_node(0x42, 100);

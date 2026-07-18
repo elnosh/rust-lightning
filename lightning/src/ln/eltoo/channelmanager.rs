@@ -32,9 +32,11 @@ use crate::ln::eltoo::msgs::{
 	AcceptChannelEltoo, ChannelReadyEltoo, ChannelReestablishEltoo, FundingCreatedEltoo,
 	FundingSignedEltoo, OpenChannelEltoo,
 };
+use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
 use crate::sign::eltoo::{EltooChannelSigner, EltooSignerProvider};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
+use crate::util::ser::{ReadableArgs, Writeable};
 
 use crate::prelude::*;
 use crate::sync::Mutex;
@@ -177,6 +179,68 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	/// Drains queued events.
 	pub fn get_and_clear_events(&self) -> Vec<EltooEvent> {
 		self.events.lock().unwrap().drain(..).collect()
+	}
+
+	/// The channel ids that should be persisted: those that have reached readiness and so
+	/// own a monitor. A node persists each of these (via [`Self::serialize_channel_state`])
+	/// whenever its state may have changed, and reloads them on startup with
+	/// [`Self::load_persisted_channel`].
+	///
+	/// Losing a monitor means losing the tip state's aggregate signature — the ability to
+	/// force-close or rebind against a stale broadcast — so this is mandatory before a
+	/// channel holds real value.
+	pub fn persistable_channel_ids(&self) -> Vec<ChannelId> {
+		self.monitors.lock().unwrap().iter().map(|monitor| monitor.channel_id()).collect()
+	}
+
+	/// Serializes a channel together with its monitor into a single self-delimiting blob
+	/// (channel first, then monitor). Returns `None` if the channel is not yet ready (no
+	/// monitor). The blob is O(1) per channel by construction — the tip signed state, the
+	/// optional committed state, open preimages and the static params.
+	pub fn serialize_channel_state(&self, channel_id: ChannelId) -> Option<Vec<u8>> {
+		// Serialize the channel and monitor separately (never holding both locks at once,
+		// to stay clear of the monitors-before-channels order used elsewhere).
+		let mut buf = Vec::new();
+		{
+			let channels = self.channels.lock().unwrap();
+			let entry = channels.iter().find(|entry| entry.channel.channel_id() == channel_id)?;
+			entry.channel.write(&mut buf).ok()?;
+		}
+		{
+			let monitors = self.monitors.lock().unwrap();
+			let monitor = monitors.iter().find(|monitor| monitor.channel_id() == channel_id)?;
+			monitor.write(&mut buf).ok()?;
+		}
+		Some(buf)
+	}
+
+	/// Reconstructs a channel and its monitor from a blob produced by
+	/// [`Self::serialize_channel_state`] and installs them, re-deriving both signers from
+	/// this manager's [`EltooSignerProvider`]. Returns the reloaded channel id.
+	pub fn load_persisted_channel(&self, data: &[u8]) -> Result<ChannelId, DecodeError> {
+		let mut reader = data;
+		let channel: EltooChannel<SP::EltooSigner> =
+			ReadableArgs::read(&mut reader, &self.signer_provider)?;
+		let monitor: EltooChannelMonitor<SP::EltooSigner> =
+			ReadableArgs::read(&mut reader, &self.signer_provider)?;
+		if channel.channel_id() != monitor.channel_id() {
+			return Err(DecodeError::InvalidValue);
+		}
+		let channel_id = channel.channel_id();
+		let counterparty_node_id = channel.counterparty_node_id();
+		// Idempotent: a channel already loaded (or live) is not duplicated.
+		{
+			let mut channels = self.channels.lock().unwrap();
+			if channels.iter().any(|entry| entry.channel.channel_id() == channel_id) {
+				return Ok(channel_id);
+			}
+			channels.push(ChannelEntry { channel, counterparty_node_id });
+		}
+		let mut monitors = self.monitors.lock().unwrap();
+		if !monitors.iter().any(|monitor| monitor.channel_id() == channel_id) {
+			monitors.push(monitor);
+		}
+		Ok(channel_id)
 	}
 
 	/// Registers a preimage for a payment we expect to receive.
@@ -664,17 +728,17 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 			},
 			_ => return,
 		};
-		let counterparty_funding = entry.counterparty_node_id;
-		let _ = counterparty_funding;
 		// Derive a fresh signer instance for the monitor (mirrors LDK, where the
 		// monitor owns its own signer).
 		let keys_id = entry.channel.signer_keys_id();
+		let counterparty_funding_pubkey = entry.channel.counterparty_funding_pubkey();
 		let mut signer = self.signer_provider.derive_eltoo_channel_signer(keys_id);
-		signer.provide_channel_keys(&entry.channel.counterparty_funding_pubkey());
+		signer.provide_channel_keys(&counterparty_funding_pubkey);
 		monitors.push(EltooChannelMonitor::new(
 			channel_id,
 			params,
 			funding.0,
+			counterparty_funding_pubkey,
 			state,
 			signer,
 			*self.best_height.lock().unwrap(),
