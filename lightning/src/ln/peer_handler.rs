@@ -3172,6 +3172,49 @@ impl<
 							let msg = Message::ChannelReestablish(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
+						MessageSendEvent::SendEltooMessage { ref node_id, msg } => {
+							log_debug!(
+								WithContext::from(&self.logger, Some(*node_id), None, None),
+								"Handling SendEltooMessage event in peer_handler for node {}",
+								node_id
+							);
+							use crate::ln::eltoo::channel::EltooMessage;
+							use crate::ln::eltoo::channelmanager::EltooWireMessage;
+							let msg = match msg {
+								EltooWireMessage::OpenChannel(m) => Message::OpenChannelEltoo(m),
+								EltooWireMessage::AcceptChannel(m) => {
+									Message::AcceptChannelEltoo(m)
+								},
+								EltooWireMessage::FundingCreated(m) => {
+									Message::FundingCreatedEltoo(m)
+								},
+								EltooWireMessage::FundingSigned(m) => {
+									Message::FundingSignedEltoo(m)
+								},
+								EltooWireMessage::ChannelReady(m) => Message::ChannelReadyEltoo(m),
+								EltooWireMessage::Reestablish(m) => {
+									Message::ChannelReestablishEltoo(m)
+								},
+								EltooWireMessage::Channel(inner) => match inner {
+									// The HTLC update messages are BOLT 2 messages reused
+									// unchanged by eltoo.
+									EltooMessage::UpdateAddHtlc(m) => Message::UpdateAddHTLC(m),
+									EltooMessage::UpdateFulfillHtlc(m) => {
+										Message::UpdateFulfillHTLC(m)
+									},
+									EltooMessage::UpdateFailHtlc(m) => Message::UpdateFailHTLC(m),
+									EltooMessage::UpdateSigned(m) => Message::UpdateSigned(m),
+									EltooMessage::UpdateSignedAck(m) => Message::UpdateSignedAck(m),
+									EltooMessage::Yield(m) => Message::Yield(m),
+									EltooMessage::Shutdown(m) => Message::ShutdownEltoo(m),
+									EltooMessage::ClosingSigned(m) => {
+										Message::ClosingSignedEltoo(m)
+									},
+									EltooMessage::ChannelReady(m) => Message::ChannelReadyEltoo(m),
+								},
+							};
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
+						},
 						MessageSendEvent::SendChannelAnnouncement {
 							ref node_id,
 							msg,

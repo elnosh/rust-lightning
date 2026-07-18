@@ -1903,6 +1903,15 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: ChannelReestablish,
 	},
+	/// Used to indicate that an eltoo channel message (any of the eltoo message set, including
+	/// the BOLT 2 HTLC update messages eltoo reuses) should be sent to the peer with the given
+	/// node_id.
+	SendEltooMessage {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: crate::ln::eltoo::channelmanager::EltooWireMessage,
+	},
 	/// Used to send a channel_announcement and channel_update to a specific peer, likely on
 	/// initial connection to ensure our peers know about our channels.
 	SendChannelAnnouncement {

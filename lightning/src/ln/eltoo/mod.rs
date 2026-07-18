@@ -36,6 +36,7 @@ pub mod channel;
 pub mod channelmanager;
 pub mod monitor;
 pub mod msgs;
+pub mod peer_glue;
 pub mod tx;
 
 #[cfg(test)]

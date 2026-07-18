@@ -40,7 +40,7 @@ use crate::prelude::*;
 use crate::sync::Mutex;
 
 /// Any eltoo wire message, for uniform routing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EltooWireMessage {
 	/// `open_channel_eltoo`.
 	OpenChannel(OpenChannelEltoo),

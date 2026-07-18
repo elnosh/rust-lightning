@@ -1131,6 +1131,7 @@ pub fn remove_first_msg_event_to_node(
 		MessageSendEvent::SendClosingSig { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendShutdown { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendChannelReestablish { node_id, .. } => node_id == msg_node_id,
+		MessageSendEvent::SendEltooMessage { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendChannelAnnouncement { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::BroadcastChannelAnnouncement { .. } => false,
 		MessageSendEvent::BroadcastChannelUpdate { .. } => false,

@@ -254,7 +254,7 @@ pub enum OutboundResolution {
 }
 
 /// An outbound message emitted by the channel for the manager to deliver.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EltooMessage {
 	/// A BOLT 2 `update_add_htlc` (reused unchanged by eltoo).
 	UpdateAddHtlc(UpdateAddHTLC),
