@@ -242,6 +242,23 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 		})
 	}
 
+	/// The channels (initiated by either side) whose funding transaction is known but
+	/// which are not yet ready: `(channel_id, funding_txid)`. The node watches these
+	/// txids and calls [`Self::funding_confirmed`] once they reach the required depth.
+	pub fn channels_awaiting_funding(&self) -> Vec<(ChannelId, Txid)> {
+		let channels = self.channels.lock().unwrap();
+		channels
+			.iter()
+			.filter(|entry| !entry.channel.is_ready())
+			.filter_map(|entry| {
+				entry
+					.channel
+					.funding()
+					.map(|(outpoint, _)| (entry.channel.channel_id(), outpoint.txid))
+			})
+			.collect()
+	}
+
 	/// Signals the funding transaction reached its required depth; queues
 	/// `channel_ready_eltoo` and instantiates the monitor.
 	pub fn funding_confirmed(&self, channel_id: ChannelId) -> Result<(), EltooChannelError> {
@@ -692,10 +709,31 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	}
 
 	fn shutdown_script(&self) -> bitcoin::ScriptBuf {
-		// PoC: a fixed script derived from our node id.
-		bitcoin::ScriptBuf::new_op_return(
-			<[u8; 8]>::try_from(&self.our_node_id.serialize()[1..9]).expect("8 bytes"),
-		)
+		// Fallback on error: a burn output derived from our node id, so tests without a
+		// wallet still close (a value-bearing OP_RETURN is consensus-valid, though
+		// `sendrawtransaction` refuses it under its default `maxburnamount`).
+		self.signer_provider.get_shutdown_scriptpubkey().unwrap_or_else(|()| {
+			bitcoin::ScriptBuf::new_op_return(
+				<[u8; 8]>::try_from(&self.our_node_id.serialize()[1..9]).expect("8 bytes"),
+			)
+		})
+	}
+}
+
+/// Lets a block-oriented chain source (e.g. `lightning-block-sync`) drive the manager
+/// directly. Reorgs are unsupported (PoC): disconnects are ignored.
+impl<SP: EltooSignerProvider> crate::chain::Listen for EltooChannelManager<SP> {
+	fn filtered_block_connected(
+		&self, _header: &bitcoin::block::Header,
+		txdata: &crate::chain::transaction::TransactionData, height: u32,
+	) {
+		let txs: Vec<Transaction> = txdata.iter().map(|(_, tx)| (*tx).clone()).collect();
+		self.transactions_confirmed(&txs, height);
+		self.best_block_updated(height);
+	}
+
+	fn blocks_disconnected(&self, _fork_point_block: crate::chain::BlockLocator) {
+		debug_assert!(false, "reorgs are unsupported in the eltoo PoC");
 	}
 }
 

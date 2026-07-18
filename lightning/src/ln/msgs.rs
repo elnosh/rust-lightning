@@ -2405,6 +2405,66 @@ impl<T: ChannelMessageHandler + ?Sized, C: Deref<Target = T>> ChannelMessageHand
 	fn handle_error(&self, their_node_id: PublicKey, msg: &ErrorMessage) {
 		self.deref().handle_error(their_node_id, msg)
 	}
+	// Eltoo messages: without these explicit forwards, a `Deref`-wrapped handler would
+	// silently fall back to the trait's default drop-the-message bodies.
+	fn handle_open_channel_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::OpenChannelEltoo,
+	) {
+		self.deref().handle_open_channel_eltoo(their_node_id, msg)
+	}
+	fn handle_accept_channel_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::AcceptChannelEltoo,
+	) {
+		self.deref().handle_accept_channel_eltoo(their_node_id, msg)
+	}
+	fn handle_funding_created_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::FundingCreatedEltoo,
+	) {
+		self.deref().handle_funding_created_eltoo(their_node_id, msg)
+	}
+	fn handle_funding_signed_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::FundingSignedEltoo,
+	) {
+		self.deref().handle_funding_signed_eltoo(their_node_id, msg)
+	}
+	fn handle_channel_ready_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::ChannelReadyEltoo,
+	) {
+		self.deref().handle_channel_ready_eltoo(their_node_id, msg)
+	}
+	fn handle_shutdown_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::ShutdownEltoo,
+	) {
+		self.deref().handle_shutdown_eltoo(their_node_id, msg)
+	}
+	fn handle_closing_signed_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::ClosingSignedEltoo,
+	) {
+		self.deref().handle_closing_signed_eltoo(their_node_id, msg)
+	}
+	fn handle_update_signed(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::UpdateSigned,
+	) {
+		self.deref().handle_update_signed(their_node_id, msg)
+	}
+	fn handle_update_signed_ack(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::UpdateSignedAck,
+	) {
+		self.deref().handle_update_signed_ack(their_node_id, msg)
+	}
+	fn handle_channel_reestablish_eltoo(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::ChannelReestablishEltoo,
+	) {
+		self.deref().handle_channel_reestablish_eltoo(their_node_id, msg)
+	}
+	fn handle_update_noop(
+		&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::UpdateNoop,
+	) {
+		self.deref().handle_update_noop(their_node_id, msg)
+	}
+	fn handle_yield(&self, their_node_id: PublicKey, msg: &crate::ln::eltoo::msgs::Yield) {
+		self.deref().handle_yield(their_node_id, msg)
+	}
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
 		self.deref().get_chain_hashes()
 	}

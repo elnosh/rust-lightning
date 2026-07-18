@@ -142,6 +142,27 @@ pub trait EltooSignerProvider {
 
 	/// Derives the signer for the channel identified by `channel_keys_id`.
 	fn derive_eltoo_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EltooSigner;
+
+	/// A script pubkey to send our channel balance to on cooperative close.
+	fn get_shutdown_scriptpubkey(&self) -> Result<ScriptBuf, ()>;
+}
+
+// Allows handing a shared keys manager (as node implementations typically hold it) to
+// an owner of an `EltooSignerProvider` by value.
+impl<T: EltooSignerProvider> EltooSignerProvider for alloc::sync::Arc<T> {
+	type EltooSigner = T::EltooSigner;
+
+	fn generate_eltoo_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
+		(**self).generate_eltoo_channel_keys_id(inbound, user_channel_id)
+	}
+
+	fn derive_eltoo_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EltooSigner {
+		(**self).derive_eltoo_channel_signer(channel_keys_id)
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> Result<ScriptBuf, ()> {
+		(**self).get_shutdown_scriptpubkey()
+	}
 }
 
 /// An in-memory [`EltooChannelSigner`], the eltoo analogue of `InMemorySigner`.
@@ -350,6 +371,10 @@ impl EltooSignerProvider for KeysManager {
 		// across restarts.
 		let nonce_seed = self.get_secure_random_bytes();
 		InMemoryEltooSigner::new(funding_key, settlement_key, htlc_key, channel_keys_id, nonce_seed)
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> Result<ScriptBuf, ()> {
+		SignerProvider::get_destination_script(self, [0u8; 32])
 	}
 }
 
