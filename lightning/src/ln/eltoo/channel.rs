@@ -33,7 +33,7 @@ use bitcoin::secp256k1::schnorr::Signature as SchnorrSignature;
 use bitcoin::secp256k1::{All, PublicKey, Secp256k1};
 use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::taproot::TapTweakHash;
-use bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, TxOut, Txid, Witness};
+use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid, Witness};
 
 use crate::ln::eltoo::msgs::{
 	AcceptChannelEltoo, ChannelReadyEltoo, ChannelReestablishEltoo, ClosingSignedEltoo,
@@ -489,6 +489,14 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 	/// The funding outpoint and output, once negotiated.
 	pub fn funding(&self) -> Option<&(OutPoint, TxOut)> {
 		self.funding.as_ref()
+	}
+
+	/// The P2TR address the funding output must pay to. Available once the funding
+	/// keys are exchanged (after `accept_channel_eltoo`); `None` before then. A wallet
+	/// pays this address, then the resulting outpoint is supplied via `funding_created`.
+	pub fn funding_address(&self, network: Network) -> Option<Address> {
+		let p_agg = self.signer.musig_keys()?.aggregate_pubkey();
+		Some(Address::p2tr_tweaked(funding_spend_info(&self.secp, &p_agg).output_key(), network))
 	}
 
 	/// The state we committed to but the peer has not yet acked, if any.
@@ -1703,6 +1711,37 @@ mod tests {
 		assert!(a.is_ready() && b.is_ready());
 		assert_channels_converged(&a, &b);
 		(a, b)
+	}
+
+	#[test]
+	fn funding_address_matches_funding_output() {
+		let config = EltooChannelConfig::default();
+		let (node_a, node_b) = (node_pk(0x0a), node_pk(0x0b));
+		let mut a = EltooChannel::new_outbound(
+			make_signer(0x10),
+			node_a,
+			node_b,
+			CAPACITY_SAT,
+			PUSH_MSAT,
+			config,
+		);
+		// Before keys are exchanged there is no funding address.
+		assert!(a.funding_address(Network::Regtest).is_none());
+
+		let open = a.open_channel_msg(ChainHash::using_genesis_block(Network::Regtest));
+		let (b, accept) =
+			EltooChannel::new_inbound(make_signer(0x20), node_b, node_a, config, &open).unwrap();
+		a.on_accept_channel(&accept).unwrap();
+
+		// The address is now derivable and both peers agree on it.
+		let addr = a.funding_address(Network::Regtest).expect("keys exchanged");
+		assert_eq!(addr, b.funding_address(Network::Regtest).expect("keys exchanged"));
+
+		// It must pay exactly the output the channel funds itself with.
+		let funding_txid = Txid::from_byte_array([0xfd; 32]);
+		a.funding_created(funding_txid, 0).unwrap();
+		let (_outpoint, txout) = a.funding().expect("funded");
+		assert_eq!(addr.script_pubkey(), txout.script_pubkey);
 	}
 
 	/// Both peers must hold byte-identical, complete, verifiable states.

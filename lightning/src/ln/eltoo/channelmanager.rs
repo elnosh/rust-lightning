@@ -21,7 +21,7 @@
 //! the monitor-update discipline (one persistence step per state transition).
 
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{OutPoint, Transaction, Txid};
+use bitcoin::{Address, Network, OutPoint, Transaction, Txid};
 
 use crate::ln::eltoo::channel::{
 	EltooChannel, EltooChannelConfig, EltooChannelError, EltooMessage, OutboundResolution,
@@ -209,6 +209,16 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 			.push((counterparty_node_id, EltooWireMessage::OpenChannel(open)));
 		self.channels.lock().unwrap().push(ChannelEntry { channel, counterparty_node_id });
 		channel_id
+	}
+
+	/// The P2TR address a wallet must pay to create this channel's funding output.
+	/// Available once the peer's `accept_channel_eltoo` has been handled; `None` before.
+	pub fn funding_address(&self, channel_id: ChannelId, network: Network) -> Option<Address> {
+		let channels = self.channels.lock().unwrap();
+		channels
+			.iter()
+			.find(|entry| entry.channel.channel_id() == channel_id)
+			.and_then(|entry| entry.channel.funding_address(network))
 	}
 
 	/// The funding transaction is available (harness-provided); queues

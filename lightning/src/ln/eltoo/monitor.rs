@@ -293,10 +293,11 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 		for tx in txs {
 			// 1) Something spent the contested UTXO (funding output or the confirmed
 			//    state output).
-			let contested = self.contested_outpoint();
-			if tx.input.iter().any(|input| input.previous_output == contested) {
-				actions.append(&mut self.handle_contested_spend(tx, height));
-				continue;
+			if let Some(contested) = self.contested_outpoint() {
+				if tx.input.iter().any(|input| input.previous_output == contested) {
+					actions.append(&mut self.handle_contested_spend(tx, height));
+					continue;
+				}
 			}
 			// 2) Something spent an HTLC output of the confirmed settlement.
 			if let OnchainStatus::SettlementConfirmed { txid, .. } = &self.status {
@@ -336,12 +337,15 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 		actions
 	}
 
-	fn contested_outpoint(&self) -> OutPoint {
+	/// The outpoint whose spend decides the channel's fate, if any. `None` once the
+	/// settlement is confirmed (never the null outpoint: that would make coinbase
+	/// inputs, whose previous output is null, look like a spend of it).
+	fn contested_outpoint(&self) -> Option<OutPoint> {
 		match &self.status {
-			OnchainStatus::FundingUnspent => self.funding_outpoint,
-			OnchainStatus::UpdateConfirmed { state_outpoint, .. } => *state_outpoint,
+			OnchainStatus::FundingUnspent => Some(self.funding_outpoint),
+			OnchainStatus::UpdateConfirmed { state_outpoint, .. } => Some(*state_outpoint),
 			// Nothing left to contest.
-			_ => OutPoint::null(),
+			_ => None,
 		}
 	}
 
