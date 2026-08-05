@@ -471,6 +471,18 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 		})
 	}
 
+	/// The counterparty's current balance in msat (excluding in-flight HTLCs), per the
+	/// tip state.
+	pub fn their_balance_msat(&self) -> u64 {
+		self.current.as_ref().map_or(0, |state| {
+			if self.is_initiator {
+				state.desc.to_acceptor_msat
+			} else {
+				state.desc.to_initiator_msat
+			}
+		})
+	}
+
 	/// Whether the channel is usable for updates.
 	pub fn is_ready(&self) -> bool {
 		self.stage == Stage::Ready

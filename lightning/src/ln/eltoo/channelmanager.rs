@@ -126,6 +126,31 @@ struct ChannelEntry<S: EltooChannelSigner> {
 	counterparty_node_id: PublicKey,
 }
 
+/// A point-in-time summary of one eltoo channel, for listing and debugging.
+#[derive(Clone, Debug)]
+pub struct EltooChannelDetails {
+	/// The channel id (temporary until funding is negotiated).
+	pub channel_id: ChannelId,
+	/// The counterparty's node id.
+	pub counterparty_node_id: PublicKey,
+	/// The funding outpoint, once negotiated.
+	pub funding_outpoint: Option<OutPoint>,
+	/// The channel capacity, once negotiated.
+	pub capacity_sat: Option<u64>,
+	/// The tip state number, once state 0 is fully signed.
+	pub state_number: Option<u64>,
+	/// Our balance in msat, excluding in-flight HTLCs.
+	pub our_balance_msat: u64,
+	/// The counterparty's balance in msat, excluding in-flight HTLCs.
+	pub their_balance_msat: u64,
+	/// The number of in-flight HTLCs in the tip state.
+	pub pending_htlcs: usize,
+	/// Whether the channel is usable for updates.
+	pub is_ready: bool,
+	/// The monitor's on-chain status summary, once the channel has a monitor.
+	pub onchain_status: Option<&'static str>,
+}
+
 /// A minimal manager for eltoo channels. Instantiating a node with this instead of
 /// `ChannelManager` swaps the entire channel protocol; peer transport, chain sourcing
 /// and (in a full implementation) the payment layer stay shared.
@@ -241,6 +266,54 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 			monitors.push(monitor);
 		}
 		Ok(channel_id)
+	}
+
+	/// Lists all channels with a point-in-time summary of each.
+	pub fn list_channels(&self) -> Vec<EltooChannelDetails> {
+		// Snapshot monitor statuses first, never holding both locks at once (matching
+		// the lock discipline of `serialize_channel_state`).
+		let statuses: Vec<(ChannelId, &'static str)> = self
+			.monitors
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|monitor| (monitor.channel_id(), monitor.status_str()))
+			.collect();
+		self.channels
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|entry| {
+				let channel = &entry.channel;
+				let state = channel.current_state();
+				EltooChannelDetails {
+					channel_id: channel.channel_id(),
+					counterparty_node_id: entry.counterparty_node_id,
+					funding_outpoint: channel.funding().map(|(outpoint, _)| *outpoint),
+					capacity_sat: channel.channel_params().map(|params| params.capacity_sat),
+					state_number: state.map(|state| state.desc.state),
+					our_balance_msat: channel.our_balance_msat(),
+					their_balance_msat: channel.their_balance_msat(),
+					pending_htlcs: state.map_or(0, |state| state.desc.htlcs.len()),
+					is_ready: channel.is_ready(),
+					onchain_status: statuses
+						.iter()
+						.find(|(id, _)| *id == channel.channel_id())
+						.map(|(_, status)| *status),
+				}
+			})
+			.collect()
+	}
+
+	/// The channel's latest complete update transaction, fully witnessed and bound
+	/// exactly as a force-close would bind it right now, plus its P2A anchor outpoint.
+	/// Read-only: nothing is queued for broadcast, so a caller can hold the result
+	/// while the channel advances further (e.g. to later replay it as a stale state in
+	/// tests or demos).
+	pub fn signed_update_package(&self, channel_id: ChannelId) -> Option<(Transaction, OutPoint)> {
+		let monitors = self.monitors.lock().unwrap();
+		let monitor = monitors.iter().find(|monitor| monitor.channel_id() == channel_id)?;
+		monitor.signed_update_package()
 	}
 
 	/// Registers a preimage for a payment we expect to receive.

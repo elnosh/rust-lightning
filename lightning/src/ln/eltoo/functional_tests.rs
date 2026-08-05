@@ -329,3 +329,61 @@ fn force_close_and_onchain_settlement() {
 	// Signature-free covenant spend.
 	assert_eq!(settlement.input[0].witness.len(), 2);
 }
+
+#[test]
+fn list_channels_and_signed_update_package() {
+	let a = make_node(0x41, 100);
+	let b = make_node(0x42, 100);
+	let channel_id = open_channel(&a, &b, 1_000_000, 0);
+
+	let details = a.manager.list_channels();
+	assert_eq!(details.len(), 1);
+	let d = &details[0];
+	assert_eq!(d.channel_id, channel_id);
+	assert_eq!(d.counterparty_node_id, b.node_id);
+	assert!(d.is_ready);
+	assert_eq!(d.state_number, Some(0));
+	assert_eq!(d.capacity_sat, Some(1_000_000));
+	assert_eq!(d.our_balance_msat, 1_000_000_000);
+	assert_eq!(d.their_balance_msat, 0);
+	assert_eq!(d.pending_htlcs, 0);
+	assert_eq!(d.onchain_status, Some("funding-unspent"));
+	assert!(d.funding_outpoint.is_some());
+
+	// One payment advances two states (HTLC add, then fulfill).
+	let preimage = PaymentPreimage([0x21; 32]);
+	let payment_hash = b.manager.register_payment(preimage);
+	a.manager.send_payment(channel_id, 250_000_000, payment_hash, 500_000).unwrap();
+	pump(&[&a, &b]);
+	a.manager.get_and_clear_events();
+	b.manager.get_and_clear_events();
+
+	let details = a.manager.list_channels();
+	let d = &details[0];
+	assert_eq!(d.state_number, Some(2));
+	assert_eq!(d.our_balance_msat, 750_000_000);
+	assert_eq!(d.their_balance_msat, 250_000_000);
+	assert_eq!(d.pending_htlcs, 0);
+
+	// The snapshot is the same fully-signed update transaction a force-close would
+	// broadcast, pinned to its state via nLockTime — but taking it broadcasts nothing.
+	let (snapshot_tx, snapshot_anchor) =
+		a.manager.signed_update_package(channel_id).expect("snapshot");
+	assert_eq!(snapshot_tx.lock_time.to_consensus_u32(), 500_000_002);
+	assert!(a.manager.get_and_clear_events().is_empty(), "snapshot must not broadcast");
+
+	a.manager.force_close_channel(channel_id);
+	let (fc_tx, fc_anchor) = a
+		.manager
+		.get_and_clear_events()
+		.into_iter()
+		.find_map(|event| match event {
+			EltooEvent::BroadcastTransaction { tx, anchor_outpoint: Some(anchor) } => {
+				Some((tx, anchor))
+			},
+			_ => None,
+		})
+		.expect("force-close broadcast");
+	assert_eq!(snapshot_tx, fc_tx);
+	assert_eq!(snapshot_anchor, fc_anchor);
+}

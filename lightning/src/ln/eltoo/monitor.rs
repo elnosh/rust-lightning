@@ -219,6 +219,16 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 		self.current.desc.state
 	}
 
+	/// A short human-readable summary of where the channel stands on-chain.
+	pub fn status_str(&self) -> &'static str {
+		match &self.status {
+			OnchainStatus::FundingUnspent => "funding-unspent",
+			OnchainStatus::UpdateConfirmed { .. } => "update-confirmed",
+			OnchainStatus::SettlementConfirmed { .. } => "settlement-confirmed",
+			OnchainStatus::Resolved => "resolved",
+		}
+	}
+
 	/// Applies a persistence step. One call per state transition — compare the
 	/// secret + counterparty-commitment + holder-commitment step choreography of the
 	/// penalty monitor.
@@ -246,6 +256,26 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 	/// Force-closes: broadcast our latest complete update transaction, bound to
 	/// whatever the current contested UTXO is.
 	pub fn force_close(&mut self) -> Vec<EltooMonitorAction> {
+		match self.current_binding() {
+			Some((prevout, leaf, control)) => {
+				self.broadcast_update_bound_to(prevout, &leaf, &control)
+			},
+			None => Vec::new(),
+		}
+	}
+
+	/// Our latest complete update transaction, fully witnessed and bound exactly as a
+	/// force-close would bind it right now, plus its P2A anchor outpoint. Read-only:
+	/// unlike [`Self::force_close`] nothing is queued for broadcast. `None` if the
+	/// state lacks its aggregated signature or nothing is left to contest.
+	pub fn signed_update_package(&self) -> Option<(Transaction, OutPoint)> {
+		let (prevout, leaf, control) = self.current_binding()?;
+		self.signed_update_bound_to(prevout, &leaf, &control)
+	}
+
+	/// Where our latest update transaction would bind if broadcast now: the funding
+	/// outpoint before anything confirmed, or a confirmed older state's output.
+	fn current_binding(&self) -> Option<(OutPoint, ScriptBuf, bitcoin::taproot::ControlBlock)> {
 		match &self.status {
 			OnchainStatus::FundingUnspent => {
 				let spend_info =
@@ -254,39 +284,45 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 				let control = spend_info
 					.control_block(&(leaf.clone(), bitcoin::taproot::LeafVersion::TapScript))
 					.expect("funding leaf exists");
-				self.broadcast_update_bound_to(self.funding_outpoint, &leaf, &control)
+				Some((self.funding_outpoint, leaf, control))
 			},
-			OnchainStatus::UpdateConfirmed { state, state_outpoint, settle_leaf_hash, .. } => {
-				if *state < self.current.desc.state {
-					let (leaf, control, _) = reconstruct_state_spend(
-						&self.secp,
-						&self.params.p_agg,
-						*state,
-						settle_leaf_hash,
-					);
-					self.broadcast_update_bound_to(*state_outpoint, &leaf, &control)
-				} else {
-					Vec::new()
-				}
+			OnchainStatus::UpdateConfirmed { state, state_outpoint, settle_leaf_hash, .. }
+				if *state < self.current.desc.state =>
+			{
+				let (leaf, control, _) = reconstruct_state_spend(
+					&self.secp,
+					&self.params.p_agg,
+					*state,
+					settle_leaf_hash,
+				);
+				Some((*state_outpoint, leaf, control))
 			},
-			_ => Vec::new(),
+			_ => None,
 		}
+	}
+
+	fn signed_update_bound_to(
+		&self, prevout: OutPoint, leaf: &ScriptBuf, control: &bitcoin::taproot::ControlBlock,
+	) -> Option<(Transaction, OutPoint)> {
+		// Without the aggregated signature we cannot broadcast; the committed
+		// state remains the peer's prerogative.
+		let agg_sig = self.current.agg_sig.as_ref()?;
+		let mut tx = self.current.built.update_tx.clone();
+		tx.input[0].previous_output = prevout;
+		tx.input[0].witness = update_spend_witness(agg_sig, leaf, control);
+		let anchor = OutPoint { txid: tx.compute_txid(), vout: 0 };
+		Some((tx, anchor))
 	}
 
 	fn broadcast_update_bound_to(
 		&self, prevout: OutPoint, leaf: &ScriptBuf, control: &bitcoin::taproot::ControlBlock,
 	) -> Vec<EltooMonitorAction> {
-		let agg_sig = match &self.current.agg_sig {
-			Some(sig) => sig,
-			// Without the aggregated signature we cannot broadcast; the committed
-			// state remains the peer's prerogative.
-			None => return Vec::new(),
-		};
-		let mut tx = self.current.built.update_tx.clone();
-		tx.input[0].previous_output = prevout;
-		tx.input[0].witness = update_spend_witness(agg_sig, leaf, control);
-		let anchor = OutPoint { txid: tx.compute_txid(), vout: 0 };
-		vec![EltooMonitorAction::BroadcastTransaction { tx, anchor_outpoint: Some(anchor) }]
+		match self.signed_update_bound_to(prevout, leaf, control) {
+			Some((tx, anchor)) => {
+				vec![EltooMonitorAction::BroadcastTransaction { tx, anchor_outpoint: Some(anchor) }]
+			},
+			None => Vec::new(),
+		}
 	}
 
 	/// Processes confirmed transactions. The complete decision ladder for everything
