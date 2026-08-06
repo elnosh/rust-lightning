@@ -159,6 +159,12 @@ pub struct EltooChannelManager<SP: EltooSignerProvider> {
 	config: EltooChannelConfig,
 	chain_hash: bitcoin::constants::ChainHash,
 	signer_provider: SP,
+	/// Serializes whole channel operations. A channel operation is not just the channel
+	/// mutation: it is the mutation, the monitor updates it produced, and the messages it
+	/// released, which must reach the outside world in that order. The per-field locks
+	/// below cannot express that (and `channels` and `monitors` are deliberately never
+	/// held at once), so every public entry point takes this first.
+	op_lock: Mutex<()>,
 	channels: Mutex<Vec<ChannelEntry<SP::EltooSigner>>>,
 	monitors: Mutex<Vec<EltooChannelMonitor<SP::EltooSigner>>>,
 	/// Outbound messages awaiting delivery: `(destination node, message)`.
@@ -185,6 +191,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 			config,
 			chain_hash,
 			signer_provider,
+			op_lock: Mutex::new(()),
 			channels: Mutex::new(Vec::new()),
 			monitors: Mutex::new(Vec::new()),
 			pending_msgs: Mutex::new(Vec::new()),
@@ -223,6 +230,10 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	/// monitor). The blob is O(1) per channel by construction — the tip signed state, the
 	/// optional committed state, open preimages and the static params.
 	pub fn serialize_channel_state(&self, channel_id: ChannelId) -> Option<Vec<u8>> {
+		// The operation lock makes this a consistent (channel, monitor) snapshot: without
+		// it the pair could be torn by a concurrent operation, persisting a channel at one
+		// state alongside a monitor at another.
+		let _op = self.op_lock.lock().unwrap();
 		// Serialize the channel and monitor separately (never holding both locks at once,
 		// to stay clear of the monitors-before-channels order used elsewhere).
 		let mut buf = Vec::new();
@@ -243,6 +254,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	/// [`Self::serialize_channel_state`] and installs them, re-deriving both signers from
 	/// this manager's [`EltooSignerProvider`]. Returns the reloaded channel id.
 	pub fn load_persisted_channel(&self, data: &[u8]) -> Result<ChannelId, DecodeError> {
+		let _op = self.op_lock.lock().unwrap();
 		let mut reader = data;
 		let channel: EltooChannel<SP::EltooSigner> =
 			ReadableArgs::read(&mut reader, &self.signer_provider)?;
@@ -316,6 +328,15 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 		monitor.signed_update_package()
 	}
 
+	/// The state numbers this channel's monitor holds: the complete tip, and the state we
+	/// have signed and sent but the counterparty has not yet acked. `None` before the
+	/// channel has a monitor.
+	pub fn monitor_state_numbers(&self, channel_id: ChannelId) -> Option<(u64, Option<u64>)> {
+		let monitors = self.monitors.lock().unwrap();
+		let monitor = monitors.iter().find(|monitor| monitor.channel_id() == channel_id)?;
+		Some((monitor.current_state_number(), monitor.committed_state_number()))
+	}
+
 	/// Registers a preimage for a payment we expect to receive.
 	pub fn register_payment(&self, payment_preimage: PaymentPreimage) -> PaymentHash {
 		use bitcoin::hashes::{sha256, Hash};
@@ -328,6 +349,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	pub fn create_channel(
 		&self, counterparty_node_id: PublicKey, capacity_sat: u64, push_msat: u64,
 	) -> ChannelId {
+		let _op = self.op_lock.lock().unwrap();
 		let keys_id = self.signer_provider.generate_eltoo_channel_keys_id(false, 0);
 		let signer = self.signer_provider.derive_eltoo_channel_signer(keys_id);
 		let mut channel = EltooChannel::new_outbound(
@@ -363,6 +385,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	pub fn funding_ready(
 		&self, channel_id: ChannelId, funding_txid: Txid, funding_output_index: u16,
 	) -> Result<ChannelId, EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
 		self.with_channel(channel_id, |chan| {
 			chan.funding_created(funding_txid, funding_output_index)
 		})
@@ -399,6 +422,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	/// Signals the funding transaction reached its required depth; queues
 	/// `channel_ready_eltoo` and instantiates the monitor.
 	pub fn funding_confirmed(&self, channel_id: ChannelId) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
 		let (peer, msg) = self.with_channel(channel_id, |chan| chan.funding_confirmed())?;
 		self.pending_msgs.lock().unwrap().push((peer, EltooWireMessage::ChannelReady(msg)));
 		self.maybe_create_monitor(channel_id);
@@ -410,6 +434,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	pub fn send_payment(
 		&self, channel_id: ChannelId, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 	) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
 		let htlc_id = self
 			.with_channel(channel_id, |chan| {
 				chan.queue_add_htlc(amount_msat, payment_hash, cltv_expiry, dummy_onion())
@@ -425,6 +450,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 		&self, in_channel: ChannelId, in_htlc_id: u64, out_channel: ChannelId, amount_msat: u64,
 		payment_hash: PaymentHash, cltv_expiry: u32,
 	) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
 		let out_htlc_id = self
 			.with_channel(out_channel, |chan| {
 				chan.queue_add_htlc(amount_msat, payment_hash, cltv_expiry, dummy_onion())
@@ -441,20 +467,31 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	pub fn claim_htlc(
 		&self, channel_id: ChannelId, htlc_id: u64, payment_preimage: PaymentPreimage,
 	) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
+		self.claim_htlc_locked(channel_id, htlc_id, payment_preimage)
+	}
+
+	/// [`Self::claim_htlc`] for callers that already hold the operation lock (the switch
+	/// claiming upstream while handling a downstream resolution).
+	fn claim_htlc_locked(
+		&self, channel_id: ChannelId, htlc_id: u64, payment_preimage: PaymentPreimage,
+	) -> Result<(), EltooChannelError> {
+		// `queue_fulfill_htlc` emits the preimage monitor update itself, which
+		// `with_channel` applies before the fulfill can be queued for sending.
 		self.with_channel(channel_id, |chan| chan.queue_fulfill_htlc(htlc_id, payment_preimage))?;
-		let payment_hash = {
-			use bitcoin::hashes::{sha256, Hash};
-			PaymentHash(sha256::Hash::hash(&payment_preimage.0).to_byte_array())
-		};
-		self.monitor_step(
-			channel_id,
-			EltooMonitorUpdateStep::PaymentPreimage { payment_hash, payment_preimage },
-		);
 		self.flush_channel(channel_id)
 	}
 
 	/// Fails an inbound HTLC.
 	pub fn fail_htlc(
+		&self, channel_id: ChannelId, htlc_id: u64, reason: Vec<u8>,
+	) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
+		self.fail_htlc_locked(channel_id, htlc_id, reason)
+	}
+
+	/// [`Self::fail_htlc`] for callers that already hold the operation lock.
+	fn fail_htlc_locked(
 		&self, channel_id: ChannelId, htlc_id: u64, reason: Vec<u8>,
 	) -> Result<(), EltooChannelError> {
 		self.with_channel(channel_id, |chan| chan.queue_fail_htlc(htlc_id, reason))?;
@@ -465,6 +502,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	pub fn close_channel(
 		&self, channel_id: ChannelId, script: bitcoin::ScriptBuf,
 	) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
 		let (peer, msg) = self.with_channel(channel_id, |chan| chan.start_shutdown(script))?;
 		self.pending_msgs
 			.lock()
@@ -475,6 +513,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 
 	/// Force-closes: asks the monitor to broadcast the latest state.
 	pub fn force_close_channel(&self, channel_id: ChannelId) {
+		let _op = self.op_lock.lock().unwrap();
 		let mut monitors = self.monitors.lock().unwrap();
 		if let Some(monitor) =
 			monitors.iter_mut().find(|monitor| monitor.channel_id() == channel_id)
@@ -487,6 +526,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 
 	/// Feeds confirmed transactions to all monitors.
 	pub fn transactions_confirmed(&self, txs: &[Transaction], height: u32) {
+		let _op = self.op_lock.lock().unwrap();
 		let mut actions = Vec::new();
 		{
 			let mut monitors = self.monitors.lock().unwrap();
@@ -499,6 +539,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 
 	/// Advances the best block height for all monitors.
 	pub fn best_block_updated(&self, height: u32) {
+		let _op = self.op_lock.lock().unwrap();
 		*self.best_height.lock().unwrap() = height;
 		let mut actions = Vec::new();
 		{
@@ -514,6 +555,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 	pub fn handle_message(
 		&self, peer: PublicKey, msg: EltooWireMessage,
 	) -> Result<(), EltooChannelError> {
+		let _op = self.op_lock.lock().unwrap();
 		match msg {
 			EltooWireMessage::OpenChannel(open) => {
 				let keys_id = self.signer_provider.generate_eltoo_channel_keys_id(true, 0);
@@ -558,7 +600,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 				if let Some(advance) = advance {
 					self.handle_state_advance(channel_id, advance);
 				}
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 				Ok(())
 			},
 			EltooWireMessage::Channel(msg) => {
@@ -580,45 +622,45 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 			EltooMessage::UpdateAddHtlc(m) => {
 				let (_, msgs) =
 					self.with_channel(channel_id, |chan| chan.on_update_add_htlc(&m))?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 			},
 			EltooMessage::UpdateFulfillHtlc(m) => {
 				let (_, msgs) =
 					self.with_channel(channel_id, |chan| chan.on_update_fulfill_htlc(&m))?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 			},
 			EltooMessage::UpdateFailHtlc(m) => {
 				let (_, msgs) =
 					self.with_channel(channel_id, |chan| chan.on_update_fail_htlc(&m))?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 			},
 			EltooMessage::UpdateSigned(m) => {
 				let (_, (msgs, advance)) =
 					self.with_channel(channel_id, |chan| chan.on_update_signed(&m))?;
 				// The ack must go out before anything the state advance triggers
 				// (e.g. an auto-claim starting our own turn).
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 				self.handle_state_advance(channel_id, advance);
 			},
 			EltooMessage::UpdateSignedAck(m) => {
 				let (_, (msgs, advance)) =
 					self.with_channel(channel_id, |chan| chan.on_update_signed_ack(&m))?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 				self.handle_state_advance(channel_id, advance);
 			},
 			EltooMessage::Yield(_) => {
 				let (_, msgs) = self.with_channel(channel_id, |chan| chan.on_yield())?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 			},
 			EltooMessage::Shutdown(m) => {
 				let script = self.shutdown_script();
 				let (_, msgs) = self
 					.with_channel(channel_id, |chan| chan.on_shutdown(&m, script.clone(), 500))?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 			},
 			EltooMessage::ClosingSigned(m) => {
 				let (_, msgs) = self.with_channel(channel_id, |chan| chan.on_closing_signed(&m))?;
-				self.route_channel_msgs(peer, channel_id, msgs);
+				self.route_channel_msgs(peer, msgs);
 				// If negotiation completed, the closing tx is broadcastable.
 				let channels = self.channels.lock().unwrap();
 				if let Some(entry) =
@@ -643,64 +685,51 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 
 	// ===== Internals =====
 
+	/// Runs `op` on a channel and applies every monitor update the channel produced, in
+	/// order, before returning. The caller may queue the operation's outbound messages
+	/// only afterwards: no message may be released before the monitor update that
+	/// authorises it has been applied.
+	///
+	/// Callers must already hold [`Self::op_lock`]; `channels` and `monitors` are still
+	/// never held simultaneously.
 	fn with_channel<R>(
 		&self, channel_id: ChannelId,
 		op: impl FnOnce(&mut EltooChannel<SP::EltooSigner>) -> Result<R, EltooChannelError>,
 	) -> Result<(PublicKey, R), EltooChannelError> {
-		let mut channels = self.channels.lock().unwrap();
-		let entry = channels
-			.iter_mut()
-			.find(|entry| entry.channel.channel_id() == channel_id)
-			.ok_or(EltooChannelError::Warn("unknown channel"))?;
-		let result = op(&mut entry.channel)?;
-		Ok((entry.counterparty_node_id, result))
+		let (counterparty_node_id, steps, result) = {
+			let mut channels = self.channels.lock().unwrap();
+			let entry = channels
+				.iter_mut()
+				.find(|entry| entry.channel.channel_id() == channel_id)
+				.ok_or(EltooChannelError::Warn("unknown channel"))?;
+			let result = op(&mut entry.channel);
+			// Drained even when the operation failed: a partial signature that was created,
+			// or a preimage that was seen, cannot be un-created by a later error.
+			let steps = entry.channel.drain_monitor_steps();
+			(entry.counterparty_node_id, steps, result)
+		};
+		self.apply_monitor_steps(channel_id, steps);
+		Ok((counterparty_node_id, result?))
 	}
 
-	/// Routes channel-emitted messages, syncing the monitor when a commit went out.
-	fn route_channel_msgs(&self, peer: PublicKey, channel_id: ChannelId, msgs: Vec<EltooMessage>) {
-		let committed = msgs.iter().any(|m| matches!(m, EltooMessage::UpdateSigned(_)));
-		{
-			let mut pending = self.pending_msgs.lock().unwrap();
-			for msg in msgs {
-				pending.push((peer, EltooWireMessage::Channel(msg)));
-			}
-		}
-		if committed {
-			let channels = self.channels.lock().unwrap();
-			if let Some(entry) =
-				channels.iter().find(|entry| entry.channel.channel_id() == channel_id)
-			{
-				if let Some(pending_state) = entry.channel.pending_state() {
-					let step =
-						EltooMonitorUpdateStep::StateCommitted(pending_state.to_monitor_state());
-					drop(channels);
-					self.monitor_step(channel_id, step);
-				}
-			}
+	/// Queues channel-emitted messages for delivery. Any monitor updates the same
+	/// operation produced were already applied by [`Self::with_channel`].
+	fn route_channel_msgs(&self, peer: PublicKey, msgs: Vec<EltooMessage>) {
+		let mut pending = self.pending_msgs.lock().unwrap();
+		for msg in msgs {
+			pending.push((peer, EltooWireMessage::Channel(msg)));
 		}
 	}
 
 	fn flush_channel(&self, channel_id: ChannelId) -> Result<(), EltooChannelError> {
 		let (peer, msgs) = self.with_channel(channel_id, |chan| chan.flush_updates())?;
-		self.route_channel_msgs(peer, channel_id, msgs);
+		self.route_channel_msgs(peer, msgs);
 		Ok(())
 	}
 
-	/// A state advanced: persist to the monitor, then run the switch logic.
+	/// Runs the switch logic for a state that just advanced. The monitor was already
+	/// brought up to date by the [`Self::with_channel`] call that produced the advance.
 	fn handle_state_advance(&self, channel_id: ChannelId, advance: StateAdvance) {
-		{
-			let channels = self.channels.lock().unwrap();
-			if let Some(entry) =
-				channels.iter().find(|entry| entry.channel.channel_id() == channel_id)
-			{
-				if let Some(state) = entry.channel.current_state() {
-					let step = EltooMonitorUpdateStep::StateAdvanced(state.to_monitor_state());
-					drop(channels);
-					self.monitor_step(channel_id, step);
-				}
-			}
-		}
-
 		// Inbound HTLCs newly committed: claim if we know the preimage, otherwise
 		// surface for a forwarding decision. Note this runs upon processing a single
 		// update_signed — the one-round-trip forwarding latency of eltoo.
@@ -713,7 +742,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 					.map(|(_, preimage)| *preimage)
 			};
 			if let Some(preimage) = preimage {
-				let _ = self.claim_htlc(channel_id, add.htlc_id, preimage);
+				let _ = self.claim_htlc_locked(channel_id, add.htlc_id, preimage);
 				self.events.lock().unwrap().push(EltooEvent::PaymentClaimed {
 					payment_hash: add.payment_hash,
 					amount_msat: add.amount_msat,
@@ -736,7 +765,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 				OutboundResolution::Fulfilled { htlc_id, payment_preimage } => {
 					let upstream = self.take_forward_link(channel_id, htlc_id);
 					if let Some((up_channel, up_htlc)) = upstream {
-						let _ = self.claim_htlc(up_channel, up_htlc, payment_preimage);
+						let _ = self.claim_htlc_locked(up_channel, up_htlc, payment_preimage);
 					} else if let Some(payment_hash) = self.take_our_payment(channel_id, htlc_id) {
 						self.events
 							.lock()
@@ -747,7 +776,7 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 				OutboundResolution::Failed { htlc_id, reason } => {
 					let upstream = self.take_forward_link(channel_id, htlc_id);
 					if let Some((up_channel, up_htlc)) = upstream {
-						let _ = self.fail_htlc(up_channel, up_htlc, reason);
+						let _ = self.fail_htlc_locked(up_channel, up_htlc, reason);
 					} else if let Some(payment_hash) = self.take_our_payment(channel_id, htlc_id) {
 						self.events
 							.lock()
@@ -772,12 +801,20 @@ impl<SP: EltooSignerProvider> EltooChannelManager<SP> {
 		Some(payments.remove(pos).2)
 	}
 
-	fn monitor_step(&self, channel_id: ChannelId, step: EltooMonitorUpdateStep) {
+	/// Applies monitor updates in the order the channel produced them. Steps for a channel
+	/// that has no monitor yet (state 0, before `channel_ready`) are dropped: the monitor
+	/// is seeded from the channel's tip state when it is created.
+	fn apply_monitor_steps(&self, channel_id: ChannelId, steps: Vec<EltooMonitorUpdateStep>) {
+		if steps.is_empty() {
+			return;
+		}
 		let mut monitors = self.monitors.lock().unwrap();
 		if let Some(monitor) =
 			monitors.iter_mut().find(|monitor| monitor.channel_id() == channel_id)
 		{
-			monitor.update(step);
+			for step in steps {
+				monitor.update(step);
+			}
 		}
 	}
 

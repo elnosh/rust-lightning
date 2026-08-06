@@ -482,18 +482,17 @@ fn force_close_settlement_ladder_and_htlc_claims() {
 	);
 
 	// Past HTLC 3's expiry, a reclaims it via the timeout path (nLockTime = expiry).
-	// The fail-upstream signal fires together with the claim broadcast.
 	let tip = chain.tip_height();
 	assert!(tip < expiry3, "timeout must not have been claimable yet");
 	chain.mine((expiry3 - tip) as usize);
 	last_synced = sync_chain(&chain, &[&a, &b], last_synced);
 	let events = drain_events_and_broadcast(&chain, &[&a, &b]);
+	// Broadcasting the claim resolves nothing: EXPR_SUCCESS carries no deadline, so b's
+	// preimage path is still live and could win this race. Failing upstream now would
+	// give the value away if it did.
 	assert!(
-		events.iter().any(|event| matches!(
-			event,
-			EltooEvent::HtlcTimedOutOnchain { payment_hash } if *payment_hash == payment_hash3
-		)),
-		"a must fail the timed-out htlc upstream: {:?}",
+		!events.iter().any(|event| matches!(event, EltooEvent::HtlcTimedOutOnchain { .. })),
+		"an unconfirmed timeout claim must not resolve the htlc: {:?}",
 		events
 	);
 	let timeout_from = chain.tip_height() + 1;
@@ -509,6 +508,16 @@ fn force_close_settlement_ladder_and_htlc_claims() {
 		.expect("timeout claim confirmed");
 	assert_eq!(timeout_claim.lock_time.to_consensus_u32(), expiry3);
 	assert_eq!(timeout_claim.input[0].witness.len(), 3, "[sig, leaf, control block]");
+	// The confirmation is what resolves it, and only then is the htlc failed upstream.
+	let events = drain_events_and_broadcast(&chain, &[&a, &b]);
+	assert!(
+		events.iter().any(|event| matches!(
+			event,
+			EltooEvent::HtlcTimedOutOnchain { payment_hash } if *payment_hash == payment_hash3
+		)),
+		"a must fail the htlc upstream once its timeout claim confirms: {:?}",
+		events
+	);
 	let _ = last_synced;
 }
 

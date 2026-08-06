@@ -387,3 +387,44 @@ fn list_channels_and_signed_update_package() {
 	assert_eq!(snapshot_tx, fc_tx);
 	assert_eq!(snapshot_anchor, fc_anchor);
 }
+
+/// A turn race makes one operation both advance a state and commit the next: the
+/// out-of-turn node's updates are voided, and it re-sends them in the very batch that
+/// carries the ack for the state that won. The monitor must come out of that holding
+/// *both* — the new tip and the freshly committed state.
+///
+/// The committed state is not optional bookkeeping: the counterparty can complete and
+/// broadcast it the moment it sees our partial signature, and settling it is only
+/// possible for a node that kept it.
+#[test]
+fn turn_race_keeps_committed_state_in_monitor() {
+	let a = make_node(0x41, 100);
+	let b = make_node(0x42, 100);
+	let channel_id = open_channel(&a, &b, 1_000_000, 500_000_000);
+	assert_eq!(a.manager.monitor_state_numbers(channel_id), Some((0, None)));
+
+	// Both nodes start a payment before either delivers anything, so their updates race.
+	a.manager.send_payment(channel_id, 10_000_000, PaymentHash([0x01; 32]), 500_000).unwrap();
+	b.manager.send_payment(channel_id, 20_000_000, PaymentHash([0x02; 32]), 500_000).unwrap();
+
+	// Deliver only A's batch. B voids its own updates, advances to state 1, and in the
+	// same operation re-sends them with a fresh update_signed for state 2.
+	for (dest, msg) in a.manager.get_and_clear_pending_msgs() {
+		assert_eq!(dest, b.node_id);
+		b.manager.handle_message(a.node_id, msg).expect("handling failed");
+	}
+
+	assert_eq!(
+		b.manager.monitor_state_numbers(channel_id),
+		Some((1, Some(2))),
+		"the advance must not clobber the state committed by the same operation"
+	);
+
+	// Everything converges, and the committed state clears once it is acked.
+	pump(&[&a, &b]);
+	assert_eq!(a.manager.monitor_state_numbers(channel_id), Some((2, None)));
+	assert_eq!(b.manager.monitor_state_numbers(channel_id), Some((2, None)));
+	let details = a.manager.list_channels();
+	assert_eq!(details[0].state_number, Some(2));
+	assert_eq!(details[0].pending_htlcs, 2, "both raced HTLCs survived the race");
+}

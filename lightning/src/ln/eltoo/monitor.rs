@@ -219,6 +219,13 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 		self.current.desc.state
 	}
 
+	/// The number of the state we signed and sent but the counterparty has not yet acked,
+	/// if any. We cannot broadcast it; the counterparty can, and if they do we must be
+	/// able to settle it — so losing this is losing the ability to resolve the channel.
+	pub fn committed_state_number(&self) -> Option<u64> {
+		self.committed.as_ref().map(|state| state.desc.state)
+	}
+
 	/// A short human-readable summary of where the channel stands on-chain.
 	pub fn status_str(&self) -> &'static str {
 		match &self.status {
@@ -347,8 +354,7 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 				for input in tx.input.iter() {
 					if input.previous_output.txid == settlement_txid {
 						actions.append(
-							&mut self
-								.handle_settlement_output_spend(tx, input.previous_output.vout),
+							&mut self.handle_settlement_output_spend(tx, input.previous_output),
 						);
 					}
 				}
@@ -511,44 +517,40 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 		self.claim_matured_htlcs(txid)
 	}
 
+	/// (Re)broadcasts a claim for every settlement HTLC output we can spend right now.
+	///
+	/// A claim stays in `pending_htlc_claims` until the output is actually seen spent, so
+	/// this is called on every block and re-broadcasts anything still unconfirmed — a
+	/// claim that failed to make it into a block must not be silently abandoned. Nothing
+	/// is reported resolved here: an HTLC's fate is only decided by the transaction that
+	/// confirms against its output, which [`Self::handle_settlement_output_spend`]
+	/// observes. In particular an offered HTLC is *not* failed back merely because we
+	/// broadcast its timeout claim — `EXPR_SUCCESS` carries no deadline, so the
+	/// counterparty's preimage claim can still win that race.
 	fn claim_matured_htlcs(&mut self, settlement_txid: Txid) -> Vec<EltooMonitorAction> {
 		let mut actions = Vec::new();
-		let mut remaining = Vec::new();
-		let claims: Vec<(u32, MonitorHtlc)> = self.pending_htlc_claims.drain(..).collect();
-		for (vout, htlc) in claims {
-			let outpoint = OutPoint { txid: settlement_txid, vout };
-			let settlement_out = &self.current.built.settlement_tx.output[vout as usize];
+		for (vout, htlc) in self.pending_htlc_claims.iter() {
+			let outpoint = OutPoint { txid: settlement_txid, vout: *vout };
+			let settlement_out = &self.current.built.settlement_tx.output[*vout as usize];
 			let preimage = self
 				.preimages
 				.iter()
 				.find(|(hash, _)| *hash == htlc.payment_hash)
 				.map(|(_, preimage)| *preimage);
-			if !htlc.offered_by_us {
-				if let Some(preimage) = preimage {
-					if let Some(tx) =
-						self.build_htlc_claim(outpoint, settlement_out, &htlc, Some(preimage))
-					{
-						actions.push(EltooMonitorAction::BroadcastTransaction {
-							tx,
-							anchor_outpoint: None,
-						});
-						continue;
-					}
-				}
+			let claim = if !htlc.offered_by_us {
+				preimage.and_then(|preimage| {
+					self.build_htlc_claim(outpoint, settlement_out, htlc, Some(preimage))
+				})
 			} else if self.best_height >= htlc.cltv_expiry {
-				if let Some(tx) = self.build_htlc_claim(outpoint, settlement_out, &htlc, None) {
-					actions.push(EltooMonitorAction::BroadcastTransaction {
-						tx,
-						anchor_outpoint: None,
-					});
-					actions
-						.push(EltooMonitorAction::HtlcTimedOut { payment_hash: htlc.payment_hash });
-					continue;
-				}
+				self.build_htlc_claim(outpoint, settlement_out, htlc, None)
+			} else {
+				None
+			};
+			if let Some(tx) = claim {
+				actions
+					.push(EltooMonitorAction::BroadcastTransaction { tx, anchor_outpoint: None });
 			}
-			remaining.push((vout, htlc));
 		}
-		self.pending_htlc_claims = remaining;
 		actions
 	}
 
@@ -605,32 +607,39 @@ impl<S: EltooChannelSigner> EltooChannelMonitor<S> {
 		Some(tx)
 	}
 
+	/// An HTLC settlement output was spent — this, and only this, resolves the HTLC.
+	///
+	/// For an HTLC we offered the spend is either the counterparty's preimage claim (the
+	/// preimage is in the witness: extract and propagate it upstream) or our own timeout
+	/// claim confirming (fail it upstream). Distinguishing them by witness content rather
+	/// than by which transaction we broadcast is what makes the outcome truthful: both
+	/// paths are spendable at once past `cltv_expiry`, and whichever confirms wins.
 	fn handle_settlement_output_spend(
-		&mut self, tx: &Transaction, vout: u32,
+		&mut self, tx: &Transaction, spent: OutPoint,
 	) -> Vec<EltooMonitorAction> {
 		let mut actions = Vec::new();
-		if let Some(pos) = self.pending_htlc_claims.iter().position(|(v, _)| *v == vout) {
+		if let Some(pos) = self.pending_htlc_claims.iter().position(|(v, _)| *v == spent.vout) {
 			let (_, htlc) = self.pending_htlc_claims.remove(pos);
-			// If the peer claimed an HTLC we offered via the preimage path, the
-			// preimage is right there in the witness — extract and propagate.
 			if htlc.offered_by_us {
-				for input in tx.input.iter() {
-					if input.previous_output.vout != vout {
-						continue;
-					}
+				let mut preimage = None;
+				for input in tx.input.iter().filter(|input| input.previous_output == spent) {
 					for element in input.witness.iter() {
 						if element.len() == 32 {
 							let candidate =
 								PaymentPreimage(element.try_into().expect("length checked"));
 							if Sha256::hash(&candidate.0).to_byte_array() == htlc.payment_hash.0 {
-								actions.push(EltooMonitorAction::PreimageLearned {
-									payment_hash: htlc.payment_hash,
-									payment_preimage: candidate,
-								});
+								preimage = Some(candidate);
 							}
 						}
 					}
 				}
+				actions.push(match preimage {
+					Some(payment_preimage) => EltooMonitorAction::PreimageLearned {
+						payment_hash: htlc.payment_hash,
+						payment_preimage,
+					},
+					None => EltooMonitorAction::HtlcTimedOut { payment_hash: htlc.payment_hash },
+				});
 			}
 		}
 		actions
@@ -1134,16 +1143,76 @@ mod tests {
 		assert!(actions.is_empty(), "not yet expired");
 
 		// Past the HTLC's cltv_expiry, A (the offerer) reclaims via the timeout path;
-		// the claim's nLockTime satisfies EXPR_TIMEOUT's CLTV, and the upstream HTLC
-		// is failed.
+		// the claim's nLockTime satisfies EXPR_TIMEOUT's CLTV.
 		let actions = monitor_a.best_block_updated(400);
 		let claim = extract_broadcast(&actions).clone();
 		assert_eq!(claim.lock_time.to_consensus_u32(), 400);
 		let witness: Vec<&[u8]> = claim.input[0].witness.iter().collect();
 		assert_eq!(witness.len(), 3, "[sig, script, control]");
+		// Broadcasting the claim resolves nothing: EXPR_SUCCESS has no deadline, so the
+		// counterparty's preimage claim can still win this race. Failing the upstream HTLC
+		// here would give away the value if it did.
+		assert!(
+			!actions.iter().any(|action| matches!(action, EltooMonitorAction::HtlcTimedOut { .. })),
+			"an unconfirmed timeout claim must not resolve the HTLC"
+		);
+
+		// An unconfirmed claim is retried rather than abandoned.
+		let retry = monitor_a.best_block_updated(401);
+		assert_eq!(extract_broadcast(&retry).compute_txid(), claim.compute_txid());
+
+		// Only the confirmation resolves it, and the upstream HTLC is failed then.
+		let actions = monitor_a.transactions_confirmed(&[claim], 402);
 		assert!(actions.iter().any(|action| matches!(
 			action,
 			EltooMonitorAction::HtlcTimedOut { payment_hash: hash } if *hash == payment_hash
 		)));
+		// Resolved: no further claim is broadcast for that output.
+		assert!(monitor_a.best_block_updated(403).is_empty());
+	}
+
+	/// The counterparty winning the `cltv_expiry` race — the case that makes resolving on
+	/// broadcast unsound. A broadcasts its timeout claim, but B's preimage claim confirms
+	/// first: A must learn the preimage and must never report the HTLC timed out.
+	#[test]
+	fn preimage_claim_beats_broadcast_timeout_claim() {
+		let (mut a, mut b) = open_channel_pair();
+		let preimage = PaymentPreimage([0x99; 32]);
+		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
+		a.queue_add_htlc(50_000_000, payment_hash, 400, dummy_onion()).unwrap();
+		let msgs = a.flush_updates().unwrap();
+		pump(&mut a, &mut b, msgs);
+
+		let mut monitor_a = monitor_for(&a, SIGNER_A, 100);
+		let mut monitor_b = monitor_for(&b, SIGNER_B, 100);
+		monitor_b.update(EltooMonitorUpdateStep::PaymentPreimage {
+			payment_hash,
+			payment_preimage: preimage,
+		});
+
+		let actions = monitor_a.force_close();
+		let update_tx = extract_broadcast(&actions).clone();
+		monitor_a.transactions_confirmed(&[update_tx.clone()], 110);
+		monitor_b.transactions_confirmed(&[update_tx], 110);
+		let actions = monitor_a.best_block_updated(110 + SHARED_DELAY);
+		let settlement = extract_broadcast(&actions).clone();
+		monitor_a.transactions_confirmed(&[settlement.clone()], 260);
+		let actions_b = monitor_b.transactions_confirmed(&[settlement], 260);
+		let claim_b = extract_broadcast(&actions_b).clone();
+
+		// A broadcasts its timeout claim once expired...
+		let actions = monitor_a.best_block_updated(400);
+		assert!(!actions.is_empty(), "A broadcasts the timeout claim");
+		// ...but B's preimage claim is what confirms.
+		let actions = monitor_a.transactions_confirmed(&[claim_b], 401);
+		assert!(actions.iter().any(|action| matches!(
+			action,
+			EltooMonitorAction::PreimageLearned { payment_hash: hash, payment_preimage: p }
+				if *hash == payment_hash && *p == preimage
+		)));
+		assert!(
+			!actions.iter().any(|action| matches!(action, EltooMonitorAction::HtlcTimedOut { .. })),
+			"the HTLC was fulfilled on-chain, not timed out"
+		);
 	}
 }

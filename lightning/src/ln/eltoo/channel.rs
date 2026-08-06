@@ -35,6 +35,7 @@ use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::taproot::TapTweakHash;
 use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid, Witness};
 
+use crate::ln::eltoo::monitor::EltooMonitorUpdateStep;
 use crate::ln::eltoo::msgs::{
 	AcceptChannelEltoo, ChannelReadyEltoo, ChannelReestablishEltoo, ClosingSignedEltoo,
 	FundingCreatedEltoo, FundingSignedEltoo, OpenChannelEltoo, ShutdownEltoo, UpdateSigned,
@@ -302,6 +303,12 @@ pub struct EltooChannel<S: EltooChannelSigner> {
 	/// A state we have signed and sent `update_signed` for, awaiting the ack. At most
 	/// one state is ever in flight, in one direction.
 	pending_commit: Option<SignedState>,
+	/// Monitor updates produced by the operation currently being handled, in the order
+	/// they must be applied. Every mutation of signed state or of preimage knowledge
+	/// appends here; the caller drains them with [`Self::drain_monitor_steps`] and must
+	/// apply them *before* releasing any message the same operation produced. Transient:
+	/// never serialized, always drained by the end of the operation that created them.
+	pending_monitor_steps: Vec<EltooMonitorUpdateStep>,
 
 	turn: Turn,
 	/// Local updates not yet sent.
@@ -431,6 +438,7 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 			stage: Stage::Negotiating,
 			current: None,
 			pending_commit: None,
+			pending_monitor_steps: Vec::new(),
 			turn: Turn::TheirsIdle,
 			local_queue: VecDeque::new(),
 			in_flight_local: Vec::new(),
@@ -637,7 +645,7 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 			.signer
 			.sign_update(desc.state, built.update_template_hash, &their_nonce)
 			.map_err(|()| EltooChannelError::Close("signer refused update"))?;
-		self.pending_commit = Some(SignedState {
+		let pending = SignedState {
 			desc,
 			htlcs,
 			built,
@@ -645,7 +653,12 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 			their_psig: None,
 			agg_sig: None,
 			session_nonces: [our_nonce, their_nonce],
-		});
+		};
+		// The counterparty may complete and broadcast this state as soon as it sees our
+		// partial signature, so the monitor must learn about it before the message goes out.
+		self.pending_monitor_steps
+			.push(EltooMonitorUpdateStep::StateCommitted(pending.to_monitor_state()));
+		self.pending_commit = Some(pending);
 		// Both session nonces are now consumed.
 		self.our_next_nonce = None;
 		self.their_next_nonce = None;
@@ -676,7 +689,28 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 		// The new state is complete: the old tip is discarded *entirely*. There are no
 		// revocation secrets to store, no old claim scripts to remember.
 		self.current = self.pending_commit.take();
+		let complete = self.current.as_ref().expect("just taken from pending");
+		let complete_state = complete.desc.state;
+		let advanced = EltooMonitorUpdateStep::StateAdvanced(complete.to_monitor_state());
+		// When a state is signed and completed within one operation (the receiver of an
+		// `update_signed`, and funding), the intermediate committed step never described a
+		// state anyone could observe — drop it rather than persist a state we immediately
+		// superseded.
+		let redundant_commit = matches!(
+			self.pending_monitor_steps.last(),
+			Some(EltooMonitorUpdateStep::StateCommitted(state)) if state.desc.state == complete_state
+		);
+		if redundant_commit {
+			self.pending_monitor_steps.pop();
+		}
+		self.pending_monitor_steps.push(advanced);
 		Ok(())
+	}
+
+	/// Takes the monitor updates produced so far. The caller MUST apply them, in order,
+	/// before releasing any message produced by the same operation.
+	pub fn drain_monitor_steps(&mut self) -> Vec<EltooMonitorUpdateStep> {
+		core::mem::take(&mut self.pending_monitor_steps)
 	}
 
 	/// Announces the funding outpoint and partial-signs state 0 (initiator only).
@@ -880,6 +914,11 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 		if Sha256::hash(&payment_preimage.0).to_byte_array() != htlc.payment_hash.0 {
 			return Err(EltooChannelError::Warn("preimage does not match payment hash"));
 		}
+		// The preimage must be durable before the fulfill is announced: if the channel goes
+		// on-chain afterwards, this is what lets the monitor claim the HTLC output.
+		let payment_hash = htlc.payment_hash;
+		self.pending_monitor_steps
+			.push(EltooMonitorUpdateStep::PaymentPreimage { payment_hash, payment_preimage });
 		self.local_queue.push_back(LocalUpdate::Fulfill { htlc_id, payment_preimage });
 		Ok(())
 	}
@@ -1120,17 +1159,25 @@ impl<S: EltooChannelSigner> EltooChannel<S> {
 	pub fn on_update_fulfill_htlc(
 		&mut self, msg: &UpdateFulfillHTLC,
 	) -> Result<Vec<EltooMessage>, EltooChannelError> {
-		let yield_msg = match self.accept_remote_update_turn() {
-			Ok(m) => m,
-			Err(EltooChannelError::Ignore) => return Ok(Vec::new()),
-			Err(e) => return Err(e),
-		};
+		// Validate and record the preimage *before* any turn bookkeeping, which may drop
+		// the message. A preimage is not revocable: once seen it must be remembered, or
+		// the HTLC it unlocks can no longer be claimed if the channel goes on-chain.
 		let htlc = self
 			.find_committed(true, msg.htlc_id)
 			.ok_or(EltooChannelError::Close("fulfill of unknown HTLC"))?;
 		if Sha256::hash(&msg.payment_preimage.0).to_byte_array() != htlc.payment_hash.0 {
 			return Err(EltooChannelError::Close("fulfill with wrong preimage"));
 		}
+		let payment_hash = htlc.payment_hash;
+		self.pending_monitor_steps.push(EltooMonitorUpdateStep::PaymentPreimage {
+			payment_hash,
+			payment_preimage: msg.payment_preimage,
+		});
+		let yield_msg = match self.accept_remote_update_turn() {
+			Ok(m) => m,
+			Err(EltooChannelError::Ignore) => return Ok(Vec::new()),
+			Err(e) => return Err(e),
+		};
 		self.uncommitted_remote.push(RemoteUpdate::Fulfill {
 			htlc_id: msg.htlc_id,
 			payment_preimage: msg.payment_preimage,
@@ -1835,6 +1882,7 @@ impl<ES: EltooSignerProvider> ReadableArgs<&ES> for EltooChannel<ES::EltooSigner
 			current,
 			pending_commit,
 			// Transient protocol state — reset on load (see `write`).
+			pending_monitor_steps: Vec::new(),
 			turn: Turn::TheirsIdle,
 			local_queue: VecDeque::new(),
 			in_flight_local: Vec::new(),
@@ -2075,6 +2123,56 @@ mod tests {
 			.flat_map(|adv| adv.resolved_outbound_htlcs.iter())
 			.any(|res| matches!(res, OutboundResolution::Fulfilled { htlc_id: id, payment_preimage: p } if *id == htlc_id && *p == preimage));
 		assert!(fulfilled);
+	}
+
+	/// A preimage is not revocable. Once it has been seen and validated it must reach the
+	/// monitor, even when the turn rules make us drop the message that carried it — the
+	/// peer re-sending it later is a liveness assumption, not a safety one, and if the
+	/// channel goes on-chain first the preimage is the only way to claim the HTLC.
+	#[test]
+	fn preimage_recorded_even_when_the_fulfill_is_ignored() {
+		let (mut a, mut b) = open_channel_pair();
+		let (mut adv_a, mut adv_b) = (Vec::new(), Vec::new());
+		let preimage = PaymentPreimage([0x77; 32]);
+		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
+
+		// A offers an HTLC to B and both commit it. The turn ends up with B.
+		let htlc_id = a.queue_add_htlc(40_000_000, payment_hash, 500_000, dummy_onion()).unwrap();
+		let msgs = a.flush_updates().unwrap();
+		pump(&mut a, &mut b, msgs, Vec::new(), &mut adv_a, &mut adv_b);
+		assert_eq!(b.turn, Turn::OursIdle);
+
+		// B spends its turn on an unrelated HTLC, handing the turn back to A.
+		b.queue_add_htlc(1_000_000, PaymentHash([0x01; 32]), 500_000, dummy_onion()).unwrap();
+		let msgs = b.flush_updates().unwrap();
+		pump(&mut b, &mut a, msgs, Vec::new(), &mut adv_b, &mut adv_a);
+		assert_eq!(a.turn, Turn::OursIdle);
+
+		// A commits in its turn; its update_signed is still in flight.
+		a.queue_add_htlc(1_000_000, PaymentHash([0x02; 32]), 500_000, dummy_onion()).unwrap();
+		a.flush_updates().unwrap();
+		assert_eq!(a.turn, Turn::AwaitingAck);
+
+		// Out of turn, B fulfills the first HTLC. A must ignore the message per the turn
+		// rules — but it has already seen the preimage.
+		b.queue_fulfill_htlc(htlc_id, preimage).unwrap();
+		let fulfill = match b.flush_updates().unwrap().into_iter().next() {
+			Some(EltooMessage::UpdateFulfillHtlc(msg)) => msg,
+			other => panic!("expected an out-of-turn fulfill, got {:?}", other),
+		};
+		let _ = a.drain_monitor_steps();
+		let responses = a.on_update_fulfill_htlc(&fulfill).unwrap();
+		assert!(responses.is_empty(), "the fulfill is ignored while we await our ack");
+
+		let steps = a.drain_monitor_steps();
+		assert!(
+			steps.iter().any(|step| matches!(
+				step,
+				EltooMonitorUpdateStep::PaymentPreimage { payment_hash: hash, payment_preimage: p }
+					if *hash == payment_hash && *p == preimage
+			)),
+			"the preimage must be persisted the moment it is seen, ignored message or not"
+		);
 	}
 
 	#[test]
