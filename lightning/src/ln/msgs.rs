@@ -1547,6 +1547,9 @@ pub struct QueryChannelRange {
 	pub first_blocknum: u32,
 	/// The number of blocks to include in the query results
 	pub number_of_blocks: u32,
+	/// The `query_option_flags` of the optional `query_option` TLV. Bit 0 asks for
+	/// `channel_update` timestamps and bit 1 for `channel_update` checksums in the replies.
+	pub query_option_flags: Option<u64>,
 }
 
 /// A [`reply_channel_range`] message is a reply to a [`QueryChannelRange`]
@@ -1572,6 +1575,12 @@ pub struct ReplyChannelRange {
 	pub sync_complete: bool,
 	/// The `short_channel_id`s in the channel range
 	pub short_channel_ids: Vec<u64>,
+	/// Per `short_channel_id`, the timestamps of the `channel_update`s from `node_id_1` and
+	/// `node_id_2` (0 if unknown). Present when the query asked for timestamps.
+	pub timestamps: Option<Vec<(u32, u32)>>,
+	/// Per `short_channel_id`, the checksums of the `channel_update`s from `node_id_1` and
+	/// `node_id_2` (0 if unknown). Present when the query asked for checksums.
+	pub checksums: Option<Vec<(u32, u32)>>,
 }
 
 /// A [`query_short_channel_ids`] message is used to query a peer for
@@ -1591,6 +1600,10 @@ pub struct QueryShortChannelIds {
 	pub chain_hash: ChainHash,
 	/// The short_channel_ids that are being queried
 	pub short_channel_ids: Vec<u64>,
+	/// Optional per-`short_channel_id` flags selecting which messages to return: bit 0 the
+	/// `channel_announcement`, bits 1/2 the `channel_update` of `node_id_1`/`node_id_2`, bits 3/4
+	/// the `node_announcement` of `node_id_1`/`node_id_2`.
+	pub query_flags: Option<Vec<u64>>,
 }
 
 /// A [`reply_short_channel_ids_end`] message is sent as a reply to a
@@ -4454,7 +4467,25 @@ impl LengthReadable for QueryShortChannelIds {
 			short_channel_ids.push(Readable::read(r)?);
 		}
 
-		Ok(QueryShortChannelIds { chain_hash, short_channel_ids })
+		let mut query_flags = None;
+		read_gossip_query_tlv_stream(r, |typ, mut value| {
+			if typ != 1 {
+				return Ok(false);
+			}
+			let encoding_type: u8 = Readable::read(&mut value)?;
+			if encoding_type != EncodingType::Uncompressed as u8 {
+				return Err(DecodeError::UnsupportedCompression);
+			}
+			let mut flags = Vec::new();
+			while !value.is_empty() {
+				let flag: BigSize = Readable::read(&mut value)?;
+				flags.push(flag.0);
+			}
+			query_flags = Some(flags);
+			Ok(true)
+		})?;
+
+		Ok(QueryShortChannelIds { chain_hash, short_channel_ids, query_flags })
 	}
 }
 
@@ -4471,6 +4502,14 @@ impl Writeable for QueryShortChannelIds {
 
 		for scid in self.short_channel_ids.iter() {
 			scid.write(w)?;
+		}
+
+		if let Some(flags) = &self.query_flags {
+			let mut value = vec![EncodingType::Uncompressed as u8];
+			for flag in flags {
+				BigSize(*flag).write(&mut value)?;
+			}
+			write_gossip_query_tlv(w, 1, &value)?;
 		}
 
 		Ok(())
@@ -4491,11 +4530,90 @@ impl QueryChannelRange {
 	}
 }
 
-impl_writeable_msg!(QueryChannelRange, {
-	chain_hash,
-	first_blocknum,
-	number_of_blocks
-}, {});
+impl LengthReadable for QueryChannelRange {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: ChainHash = Readable::read(r)?;
+		let first_blocknum: u32 = Readable::read(r)?;
+		let number_of_blocks: u32 = Readable::read(r)?;
+		let mut query_option_flags = None;
+		read_gossip_query_tlv_stream(r, |typ, mut value| {
+			if typ != 1 {
+				return Ok(false);
+			}
+			let flags: BigSize = Readable::read(&mut value)?;
+			query_option_flags = Some(flags.0);
+			Ok(true)
+		})?;
+		Ok(QueryChannelRange { chain_hash, first_blocknum, number_of_blocks, query_option_flags })
+	}
+}
+
+impl Writeable for QueryChannelRange {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.chain_hash.write(w)?;
+		self.first_blocknum.write(w)?;
+		self.number_of_blocks.write(w)?;
+		if let Some(flags) = self.query_option_flags {
+			let mut value = Vec::new();
+			BigSize(flags).write(&mut value)?;
+			write_gossip_query_tlv(w, 1, &value)?;
+		}
+		Ok(())
+	}
+}
+
+/// Reads the TLV stream trailing a gossip query message. `handle` returns whether it understood
+/// the record; unknown even types are rejected, unknown odd types are skipped.
+fn read_gossip_query_tlv_stream<R: LengthLimitedRead>(
+	r: &mut R, mut handle: impl FnMut(u64, &[u8]) -> Result<bool, DecodeError>,
+) -> Result<(), DecodeError> {
+	let mut last_type: Option<u64> = None;
+	while r.remaining_bytes() > 0 {
+		let typ: BigSize = Readable::read(r)?;
+		if last_type.map_or(false, |l| typ.0 <= l) {
+			return Err(DecodeError::InvalidValue);
+		}
+		last_type = Some(typ.0);
+		let len: BigSize = Readable::read(r)?;
+		if len.0 > r.remaining_bytes() {
+			return Err(DecodeError::ShortRead);
+		}
+		let mut value = vec![0u8; len.0 as usize];
+		r.read_exact(&mut value)?;
+		if !handle(typ.0, &value)? && typ.0 % 2 == 0 {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+	}
+	Ok(())
+}
+
+fn write_gossip_query_tlv<W: Writer>(w: &mut W, typ: u64, value: &[u8]) -> Result<(), io::Error> {
+	BigSize(typ).write(w)?;
+	BigSize(value.len() as u64).write(w)?;
+	w.write_all(value)
+}
+
+fn decode_u32_pairs(mut bytes: &[u8]) -> Result<Vec<(u32, u32)>, DecodeError> {
+	if bytes.len() % 8 != 0 {
+		return Err(DecodeError::InvalidValue);
+	}
+	let mut res = Vec::with_capacity(bytes.len() / 8);
+	while !bytes.is_empty() {
+		let a: u32 = Readable::read(&mut bytes)?;
+		let b: u32 = Readable::read(&mut bytes)?;
+		res.push((a, b));
+	}
+	Ok(res)
+}
+
+fn encode_u32_pairs(pairs: &[(u32, u32)]) -> Vec<u8> {
+	let mut v = Vec::with_capacity(pairs.len() * 8);
+	for (a, b) in pairs {
+		v.extend_from_slice(&a.to_be_bytes());
+		v.extend_from_slice(&b.to_be_bytes());
+	}
+	v
+}
 
 impl LengthReadable for ReplyChannelRange {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
@@ -4527,12 +4645,32 @@ impl LengthReadable for ReplyChannelRange {
 			short_channel_ids.push(Readable::read(r)?);
 		}
 
+		let mut timestamps = None;
+		let mut checksums = None;
+		read_gossip_query_tlv_stream(r, |typ, mut value| match typ {
+			1 => {
+				let encoding_type: u8 = Readable::read(&mut value)?;
+				if encoding_type != EncodingType::Uncompressed as u8 {
+					return Err(DecodeError::UnsupportedCompression);
+				}
+				timestamps = Some(decode_u32_pairs(value)?);
+				Ok(true)
+			},
+			3 => {
+				checksums = Some(decode_u32_pairs(value)?);
+				Ok(true)
+			},
+			_ => Ok(false),
+		})?;
+
 		Ok(ReplyChannelRange {
 			chain_hash,
 			first_blocknum,
 			number_of_blocks,
 			sync_complete,
 			short_channel_ids,
+			timestamps,
+			checksums,
 		})
 	}
 }
@@ -4549,6 +4687,15 @@ impl Writeable for ReplyChannelRange {
 		(EncodingType::Uncompressed as u8).write(w)?;
 		for scid in self.short_channel_ids.iter() {
 			scid.write(w)?;
+		}
+
+		if let Some(timestamps) = &self.timestamps {
+			let mut value = vec![EncodingType::Uncompressed as u8];
+			value.extend_from_slice(&encode_u32_pairs(timestamps));
+			write_gossip_query_tlv(w, 1, &value)?;
+		}
+		if let Some(checksums) = &self.checksums {
+			write_gossip_query_tlv(w, 3, &encode_u32_pairs(checksums))?;
 		}
 
 		Ok(())
@@ -6678,6 +6825,7 @@ mod tests {
 
 		for (first_blocknum, number_of_blocks, expected) in tests.into_iter() {
 			let sut = msgs::QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: ChainHash::using_genesis_block(Network::Regtest),
 				first_blocknum,
 				number_of_blocks,
@@ -6689,6 +6837,7 @@ mod tests {
 	#[test]
 	fn encoding_query_channel_range() {
 		let mut query_channel_range = msgs::QueryChannelRange {
+			query_option_flags: None,
 			chain_hash: ChainHash::using_genesis_block(Network::Regtest),
 			first_blocknum: 100000,
 			number_of_blocks: 1500,
@@ -6719,6 +6868,8 @@ mod tests {
 		.unwrap();
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut reply_channel_range = msgs::ReplyChannelRange {
+			timestamps: None,
+			checksums: None,
 			chain_hash: expected_chain_hash,
 			first_blocknum: 756230,
 			number_of_blocks: 1500,
@@ -6755,6 +6906,64 @@ mod tests {
 	}
 
 	#[test]
+	fn encoding_gossip_query_tlvs() {
+		let chain_hash = ChainHash::using_genesis_block(Network::Regtest);
+
+		let query = msgs::QueryChannelRange {
+			chain_hash,
+			first_blocknum: 100,
+			number_of_blocks: 50,
+			query_option_flags: Some(3),
+		};
+		let encoded = query.encode();
+		assert!(encoded.ends_with(&<Vec<u8>>::from_hex("010103").unwrap()));
+		let decoded: msgs::QueryChannelRange =
+			LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, query);
+
+		let reply = msgs::ReplyChannelRange {
+			chain_hash,
+			first_blocknum: 100,
+			number_of_blocks: 50,
+			sync_complete: true,
+			short_channel_ids: vec![0x0000640000010000],
+			timestamps: Some(vec![(1, 2)]),
+			checksums: Some(vec![(3, 4)]),
+		};
+		let encoded = reply.encode();
+		assert!(encoded.ends_with(
+			&<Vec<u8>>::from_hex("010900000000010000000203080000000300000004").unwrap()
+		));
+		let decoded: msgs::ReplyChannelRange =
+			LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, reply);
+
+		let scid_query = msgs::QueryShortChannelIds {
+			chain_hash,
+			short_channel_ids: vec![1, 2],
+			query_flags: Some(vec![1, 0x1f]),
+		};
+		let encoded = scid_query.encode();
+		assert!(encoded.ends_with(&<Vec<u8>>::from_hex("010300011f").unwrap()));
+		let decoded: msgs::QueryShortChannelIds =
+			LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, scid_query);
+
+		// Unknown odd TLVs are skipped, unknown even TLVs are rejected.
+		let mut base =
+			msgs::QueryChannelRange { query_option_flags: None, ..query.clone() }.encode();
+		let mut odd = base.clone();
+		odd.extend_from_slice(&<Vec<u8>>::from_hex("0501ff").unwrap());
+		let decoded: msgs::QueryChannelRange =
+			LengthReadable::read_from_fixed_length_buffer(&mut &odd[..]).unwrap();
+		assert_eq!(decoded.query_option_flags, None);
+		base.extend_from_slice(&<Vec<u8>>::from_hex("0401ff").unwrap());
+		let res: Result<msgs::QueryChannelRange, _> =
+			LengthReadable::read_from_fixed_length_buffer(&mut &base[..]);
+		assert!(res.is_err());
+	}
+
+	#[test]
 	fn encoding_query_short_channel_ids() {
 		do_encoding_query_short_channel_ids(0);
 		do_encoding_query_short_channel_ids(1);
@@ -6766,6 +6975,7 @@ mod tests {
 				.unwrap();
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut query_short_channel_ids = msgs::QueryShortChannelIds {
+			query_flags: None,
 			chain_hash: expected_chain_hash,
 			short_channel_ids: vec![0x0000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
 		};

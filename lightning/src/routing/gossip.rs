@@ -665,6 +665,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 			pending_events.push(MessageSendEvent::SendReplyChannelRange {
 				node_id: their_node_id.clone(),
 				msg: ReplyChannelRange {
+					timestamps: None,
+					checksums: None,
 					chain_hash: msg.chain_hash.clone(),
 					first_blocknum: msg.first_blocknum,
 					number_of_blocks: msg.number_of_blocks,
@@ -737,6 +739,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 			pending_events.push(MessageSendEvent::SendReplyChannelRange {
 				node_id: their_node_id.clone(),
 				msg: ReplyChannelRange {
+					timestamps: None,
+					checksums: None,
 					chain_hash: msg.chain_hash.clone(),
 					first_blocknum,
 					number_of_blocks,
@@ -3974,12 +3978,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0,
 				number_of_blocks: 0,
 			},
 			false,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0,
 				number_of_blocks: 0,
@@ -3993,12 +4000,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 				first_blocknum: 0,
 				number_of_blocks: 0xffff_ffff,
 			},
 			false,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 				first_blocknum: 0,
 				number_of_blocks: 0xffff_ffff,
@@ -4012,12 +4022,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0x01000000,
 				number_of_blocks: 0xffff_ffff,
 			},
 			false,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0x01000000,
 				number_of_blocks: 0xffff_ffff,
@@ -4031,12 +4044,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0xffffff,
 				number_of_blocks: 1,
 			},
 			true,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0xffffff,
 				number_of_blocks: 1,
@@ -4050,12 +4066,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 1000,
 				number_of_blocks: 1000,
 			},
 			true,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 1000,
 				number_of_blocks: 1000,
@@ -4069,12 +4088,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0xfe0000,
 				number_of_blocks: 0xffffffff,
 			},
 			true,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0xfe0000,
 				number_of_blocks: 0xffffffff - 0xfe0000,
@@ -4090,12 +4112,15 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 100000,
 				number_of_blocks: 8000,
 			},
 			true,
 			vec![ReplyChannelRange {
+				timestamps: None,
+				checksums: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 100000,
 				number_of_blocks: 8000,
@@ -4111,6 +4136,7 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 100000,
 				number_of_blocks: 8001,
@@ -4118,6 +4144,8 @@ pub(crate) mod tests {
 			true,
 			vec![
 				ReplyChannelRange {
+					timestamps: None,
+					checksums: None,
 					chain_hash: chain_hash.clone(),
 					first_blocknum: 100000,
 					number_of_blocks: 7999,
@@ -4127,6 +4155,8 @@ pub(crate) mod tests {
 						.collect(),
 				},
 				ReplyChannelRange {
+					timestamps: None,
+					checksums: None,
 					chain_hash: chain_hash.clone(),
 					first_blocknum: 107999,
 					number_of_blocks: 2,
@@ -4141,6 +4171,7 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
+				query_option_flags: None,
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 100002,
 				number_of_blocks: 8000,
@@ -4148,6 +4179,8 @@ pub(crate) mod tests {
 			true,
 			vec![
 				ReplyChannelRange {
+					timestamps: None,
+					checksums: None,
 					chain_hash: chain_hash.clone(),
 					first_blocknum: 100002,
 					number_of_blocks: 7999,
@@ -4157,6 +4190,8 @@ pub(crate) mod tests {
 						.collect(),
 				},
 				ReplyChannelRange {
+					timestamps: None,
+					checksums: None,
 					chain_hash: chain_hash.clone(),
 					first_blocknum: 108001,
 					number_of_blocks: 1,
@@ -4236,7 +4271,11 @@ pub(crate) mod tests {
 
 		let result = gossip_sync.handle_query_short_channel_ids(
 			node_id,
-			QueryShortChannelIds { chain_hash, short_channel_ids: vec![0x0003e8_000000_0000] },
+			QueryShortChannelIds {
+				chain_hash,
+				short_channel_ids: vec![0x0003e8_000000_0000],
+				query_flags: None,
+			},
 		);
 		assert!(result.is_err());
 	}
