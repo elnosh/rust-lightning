@@ -11,6 +11,8 @@
 
 pub mod gossip;
 mod log_approx;
+#[cfg(all(feature = "std", not(fuzzing)))]
+pub mod query_sync;
 pub mod router;
 pub mod scoring;
 #[cfg(test)]

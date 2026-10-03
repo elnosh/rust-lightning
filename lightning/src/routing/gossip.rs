@@ -325,6 +325,8 @@ pub struct P2PGossipSync<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: L
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
+	#[cfg(all(feature = "std", not(fuzzing)))]
+	query_sync: Option<Mutex<crate::routing::query_sync::QuerySync>>,
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> P2PGossipSync<G, U, L> {
@@ -340,6 +342,29 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> P2PGossipSync
 			utxo_lookup,
 			pending_events: Mutex::new(vec![]),
 			logger,
+			#[cfg(all(feature = "std", not(fuzzing)))]
+			query_sync: None,
+		}
+	}
+
+	/// Syncs the graph with `query_channel_range` / `query_short_channel_ids` instead of asking
+	/// peers for timestamp-filtered dumps. See [`crate::routing::query_sync`].
+	#[cfg(all(feature = "std", not(fuzzing)))]
+	pub fn with_query_sync(mut self, config: crate::routing::query_sync::QuerySyncConfig) -> Self {
+		self.query_sync = Some(Mutex::new(crate::routing::query_sync::QuerySync::new(config)));
+		self
+	}
+
+	/// Whether the query-based sync (if enabled) has nothing outstanding or queued.
+	#[cfg(all(feature = "std", not(fuzzing)))]
+	pub fn query_sync_idle(&self) -> bool {
+		self.query_sync.as_ref().map_or(true, |q| q.lock().unwrap().is_idle())
+	}
+
+	#[cfg(all(feature = "std", not(fuzzing)))]
+	fn note_gossip_from(&self, their_node_id: Option<PublicKey>) {
+		if let (Some(q), Some(peer)) = (self.query_sync.as_ref(), their_node_id) {
+			q.lock().unwrap().gossip_from(peer, crate::util::sim_clock::unix_now());
 		}
 	}
 
@@ -537,6 +562,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 	fn handle_node_announcement(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::NodeAnnouncement,
 	) -> Result<bool, LightningError> {
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		self.note_gossip_from(_their_node_id);
 		self.network_graph.update_node_from_announcement(msg)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 			&& msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
@@ -547,6 +574,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 	fn handle_channel_announcement(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::ChannelAnnouncement,
 	) -> Result<bool, LightningError> {
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		self.note_gossip_from(_their_node_id);
 		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
@@ -554,6 +583,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 	fn handle_channel_update(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::ChannelUpdate,
 	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		self.note_gossip_from(_their_node_id);
 		// Ignore channel updates with dont_forward bit set - these are for private channels
 		// and shouldn't be gossiped or stored in the network graph
 		if msg.contents.message_flags & (1 << 1) != 0 {
@@ -615,6 +646,20 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 	fn handle_reply_channel_range(
 		&self, _their_node_id: PublicKey, _msg: ReplyChannelRange,
 	) -> Result<(), LightningError> {
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		if let Some(q) = self.query_sync.as_ref() {
+			let mut out = Vec::new();
+			let now = crate::util::sim_clock::unix_now();
+			q.lock().unwrap().reply_channel_range(
+				_their_node_id,
+				_msg,
+				&self.network_graph,
+				now,
+				&mut out,
+			);
+			self.pending_events.lock().unwrap().extend(out);
+			return Ok(());
+		}
 		// We don't make queries, so should never receive replies. If, in the future, the set
 		// reconciliation extensions to gossip queries become broadly supported, we should revert
 		// this code to its state pre-0.0.106.
@@ -624,6 +669,19 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessag
 	fn handle_reply_short_channel_ids_end(
 		&self, _their_node_id: PublicKey, _msg: ReplyShortChannelIdsEnd,
 	) -> Result<(), LightningError> {
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		if let Some(q) = self.query_sync.as_ref() {
+			let mut out = Vec::new();
+			let now = crate::util::sim_clock::unix_now();
+			q.lock().unwrap().reply_short_channel_ids_end(
+				_their_node_id,
+				&self.network_graph,
+				now,
+				&mut out,
+			);
+			self.pending_events.lock().unwrap().extend(out);
+			return Ok(());
+		}
 		// We don't make queries, so should never receive replies. If, in the future, the set
 		// reconciliation extensions to gossip queries become broadly supported, we should revert
 		// this code to its state pre-0.0.106.
@@ -796,6 +854,15 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> BaseMessageHa
 			return Ok(());
 		}
 
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		if let Some(q) = self.query_sync.as_ref() {
+			let mut out = Vec::new();
+			let now = crate::util::sim_clock::unix_now();
+			q.lock().unwrap().peer_connected(their_node_id, &self.network_graph, now, &mut out);
+			self.pending_events.lock().unwrap().extend(out);
+			return Ok(());
+		}
+
 		// The lightning network's gossip sync system is completely broken in numerous ways.
 		//
 		// Given no broadly-available set-reconciliation protocol, the only reasonable approach is
@@ -872,7 +939,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> BaseMessageHa
 		Ok(())
 	}
 
-	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
+	fn peer_disconnected(&self, _their_node_id: PublicKey) {
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		if let Some(q) = self.query_sync.as_ref() {
+			q.lock().unwrap().peer_disconnected(_their_node_id);
+		}
+	}
 
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
@@ -888,6 +960,16 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> BaseMessageHa
 
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		self.process_completed_checks();
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		if let Some(q) = self.query_sync.as_ref() {
+			let mut out = Vec::new();
+			q.lock().unwrap().tick(
+				&self.network_graph,
+				crate::util::sim_clock::unix_now(),
+				&mut out,
+			);
+			self.pending_events.lock().unwrap().extend(out);
+		}
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		core::mem::swap(&mut ret, &mut pending_events);
