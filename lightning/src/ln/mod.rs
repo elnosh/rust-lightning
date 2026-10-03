@@ -35,9 +35,9 @@ pub mod types;
 // crate now:
 pub mod invoice_utils;
 
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, sim_clock))]
 pub mod peer_channel_encryptor;
-#[cfg(not(fuzzing))]
+#[cfg(not(any(fuzzing, sim_clock)))]
 pub(crate) mod peer_channel_encryptor;
 
 #[cfg(fuzzing)]

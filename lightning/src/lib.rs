@@ -29,7 +29,7 @@
 //! * `std`
 //! * `grind_signatures`
 
-#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
+#![cfg_attr(not(any(test, fuzzing, sim_clock, feature = "_test_utils")), deny(missing_docs))]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
 // In general, rust is absolutely horrid at supporting users doing things like,

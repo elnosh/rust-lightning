@@ -2363,11 +2363,7 @@ impl<
 				{
 					// Forward ad-hoc gossip if the timestamp range is less than six hours ago.
 					// Otherwise, do a full sync.
-					use std::time::{SystemTime, UNIX_EPOCH};
-					let full_sync_threshold = SystemTime::now()
-						.duration_since(UNIX_EPOCH)
-						.expect("Time must be > 1970")
-						.as_secs() - 6 * 3600;
+					let full_sync_threshold = crate::util::sim_clock::unix_now() - 6 * 3600;
 					if (_msg.first_timestamp as u64) > full_sync_threshold {
 						should_do_full_sync = false;
 					}

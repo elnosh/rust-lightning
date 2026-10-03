@@ -45,6 +45,9 @@ pub(crate) mod transaction_utils;
 #[cfg(feature = "std")]
 pub(crate) mod time;
 
+#[cfg(all(feature = "std", not(fuzzing)))]
+pub mod sim_clock;
+
 pub mod indexed_map;
 
 /// Logging macro utilities.

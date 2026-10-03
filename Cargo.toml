@@ -57,6 +57,7 @@ level = "forbid"
 # defined in the member-level [features] tables as "expected".
 check-cfg = [
     "cfg(fuzzing)",
+    "cfg(sim_clock)",
     "cfg(secp256k1_fuzz)",
     "cfg(hashes_fuzz)",
     "cfg(chacha20_poly1305_fuzz)",

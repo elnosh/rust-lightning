@@ -57,9 +57,6 @@ use core::{cmp, fmt};
 
 pub use lightning_types::routing::RoutingFees;
 
-#[cfg(all(feature = "std", not(fuzzing)))]
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// We remove stale channel directional info two weeks after the last update, per BOLT 7's
 /// suggestion.
 const STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
@@ -452,20 +449,26 @@ impl<L: Logger> NetworkGraph<L> {
 
 macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr, $msg_type: expr ) => {
-		match $secp_ctx.verify_ecdsa($msg, $sig, $pubkey) {
-			Ok(_) => {},
-			Err(_) => {
-				return Err(LightningError {
-					err: format!("Invalid signature on {} message", $msg_type),
-					action: ErrorAction::SendWarningMessage {
-						msg: msgs::WarningMessage {
-							channel_id: ChannelId::new_zero(),
-							data: format!("Invalid signature on {} message", $msg_type),
+		#[cfg(all(feature = "std", not(fuzzing)))]
+		let skip_verify = crate::util::sim_clock::skip_sig_verify();
+		#[cfg(not(all(feature = "std", not(fuzzing))))]
+		let skip_verify = false;
+		if !skip_verify {
+			match $secp_ctx.verify_ecdsa($msg, $sig, $pubkey) {
+				Ok(_) => {},
+				Err(_) => {
+					return Err(LightningError {
+						err: format!("Invalid signature on {} message", $msg_type),
+						action: ErrorAction::SendWarningMessage {
+							msg: msgs::WarningMessage {
+								channel_id: ChannelId::new_zero(),
+								data: format!("Invalid signature on {} message", $msg_type),
+							},
+							log_level: Level::Trace,
 						},
-						log_level: Level::Trace,
-					},
-				});
-			},
+					});
+				},
+			}
 		}
 	};
 }
@@ -845,10 +848,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> BaseMessageHa
 		let should_sync = self.should_request_full_sync();
 		#[cfg(all(feature = "std", not(fuzzing)))]
 		{
-			gossip_start_time = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs();
+			gossip_start_time = crate::util::sim_clock::unix_now();
 			if should_sync {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
@@ -2205,10 +2205,7 @@ impl<L: Logger> NetworkGraph<L> {
 		let mut announcement_received_time = 0;
 		#[cfg(all(feature = "std", not(fuzzing)))]
 		{
-			announcement_received_time = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs();
+			announcement_received_time = crate::util::sim_clock::unix_now();
 		}
 
 		let chan_info = ChannelInfo {
@@ -2244,9 +2241,7 @@ impl<L: Logger> NetworkGraph<L> {
 	/// The channel and any node for which this was their last channel are removed from the graph.
 	pub fn channel_failed_permanent(&self, short_channel_id: u64) {
 		#[cfg(all(feature = "std", not(fuzzing)))]
-		let current_time_unix = Some(
-			SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs(),
-		);
+		let current_time_unix = Some(crate::util::sim_clock::unix_now());
 		#[cfg(any(not(feature = "std"), fuzzing))]
 		let current_time_unix = None;
 
@@ -2271,9 +2266,7 @@ impl<L: Logger> NetworkGraph<L> {
 	/// from local storage.
 	pub fn node_failed_permanent(&self, node_id: &PublicKey) {
 		#[cfg(all(feature = "std", not(fuzzing)))]
-		let current_time_unix = Some(
-			SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs(),
-		);
+		let current_time_unix = Some(crate::util::sim_clock::unix_now());
 		#[cfg(any(not(feature = "std"), fuzzing))]
 		let current_time_unix = None;
 
@@ -2329,8 +2322,7 @@ impl<L: Logger> NetworkGraph<L> {
 	/// [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] for non-`std` use.
 	#[cfg(all(feature = "std", not(fuzzing)))]
 	pub fn remove_stale_channels_and_tracking(&self) {
-		let time =
-			SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+		let time = crate::util::sim_clock::unix_now();
 		self.remove_stale_channels_and_tracking_with_time(time);
 	}
 
@@ -2488,10 +2480,7 @@ impl<L: Logger> NetworkGraph<L> {
 		{
 			// Note that many tests rely on being able to set arbitrarily old timestamps, thus we
 			// disable this check during tests!
-			let time = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs();
+			let time = crate::util::sim_clock::unix_now();
 			if (msg.timestamp as u64) < time - STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS {
 				return Err(LightningError {
 					err: "channel_update is older than two weeks old".to_owned(),

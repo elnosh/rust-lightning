@@ -6,11 +6,11 @@
 pub use hashbrown::hash_map;
 
 mod hashbrown_tables {
-	#[cfg(all(feature = "std", not(test), not(fuzzing)))]
+	#[cfg(all(feature = "std", not(test), not(fuzzing), not(sim_clock)))]
 	mod hasher {
 		pub use std::collections::hash_map::RandomState;
 	}
-	#[cfg(all(feature = "std", any(test, fuzzing)))]
+	#[cfg(all(feature = "std", any(test, fuzzing, sim_clock)))]
 	mod hasher {
 		#![allow(deprecated)] // hash::SipHasher was deprecated in favor of something only in std.
 		use core::hash::{BuildHasher, Hasher};
@@ -28,6 +28,7 @@ mod hashbrown_tables {
 		impl RandomState {
 			pub fn new() -> RandomState {
 				if cfg!(fuzzing)
+					|| cfg!(sim_clock)
 					|| std::env::var("LDK_TEST_DETERMINISTIC_HASHES")
 						.map(|v| v == "1")
 						.unwrap_or(false)
